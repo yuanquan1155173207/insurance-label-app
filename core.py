@@ -1,3 +1,6 @@
+import subprocess, sys, os, signal
+
+core_patch = r'''
 import pdfplumber, fitz, re, os, io
 import pandas as pd
 from dataclasses import dataclass
@@ -72,31 +75,19 @@ def _is_cancer_page(full_text):
     return "持續癌症" in full_text and "每月賠償" in full_text
 
 def _draw_red_box(fitz_page, rect, line_width=1.5):
-    """在指定区域画红色空心矩形框"""
     shape = fitz_page.new_shape()
     shape.draw_rect(rect)
-    shape.finish(
-        color=RED,
-        fill=None,          # 空心，不填充
-        width=line_width
-    )
+    shape.finish(color=RED, fill=None, width=line_width)
     shape.commit()
 
 def _annotate_summary(fitz_page, words, policy, font_path):
-    """
-    在说明摘要页：
-    1. 写"每年交X / 交X年不用再交"
-    2. 写"预计的退保价值" / "预计的理赔金额" 标签
-    3. 画红框框住 (1)+(2) 总额列 和 (3)+(4) 总额列的数据区域
-    4. 写底部 slogan
-    """
     w_paid  = next((w for w in words if "已繳保費" in w["text"]), None)
     w_col12 = next((w for w in words if w["text"] == "(1)+(2)"),  None)
     w_col34 = next((w for w in words if w["text"] == "(3)+(4)"),  None)
     w_100   = next((w for w in words if "100歲"   in w["text"]), None)
     w_note  = next((w for w in words if "上述年齡" in w["text"]), None)
 
-    # ── 1. 写保费/年期提示 ──────────────────────────────────────
+    # ── 1. 保费/年期提示 ─────────────────────────────────────────
     premium_str = f"{int(policy.annual_premium):,}" if policy.annual_premium else "24,170"
     years_str   = str(int(policy.payment_years))    if policy.payment_years  else "10"
     if w_paid:
@@ -104,7 +95,7 @@ def _annotate_summary(fitz_page, words, policy, font_path):
         _write(fitz_page, f"每年交{premium_str}",     49, by - 12, RED, font_path, fontsize=9)
         _write(fitz_page, f"交{years_str}年不用再交", 49, by - 2,  RED, font_path, fontsize=9)
 
-    # ── 2. 写列标签 ─────────────────────────────────────────────
+    # ── 2. 列标签 ────────────────────────────────────────────────
     if w_col12 and w_100:
         _write(fitz_page, "预计的退保价值",
                w_col12["x0"] - 10, w_100["bottom"] + 12,
@@ -115,59 +106,34 @@ def _annotate_summary(fitz_page, words, policy, font_path):
                w_col34["x0"] - 10, w_100["bottom"] + 12,
                GREEN, font_path, fontsize=9)
 
-    # ── 3. 画红框 ────────────────────────────────────────────────
-    # 思路：
-    #   用 fitz 在页面里搜索 "(1)+(2)" 和 "(3)+(4)" 的精确坐标，
-    #   再搜索表格第一行数字（年度"1"）和最后一行（"100歲"）确定上下边界，
-    #   列宽用列标题的 x 范围推算。
-    #
-    #   框1：(1)+(2) 列 —— 从表头到100歲行
-    #   框2：(3)+(4) 列 —— 从表头到100歲行
-
-    # 用 fitz 原生搜索精确坐标
+    # ── 3. 红框 ──────────────────────────────────────────────────
     hits_12  = fitz_page.search_for("(1)+(2)")
     hits_34  = fitz_page.search_for("(3)+(4)")
     hits_100 = fitz_page.search_for("100歲")
 
-    # 表格第一数据行：搜索列标题行下方第一个"1"（年度1）
-    # 用 pdfplumber words 里找年度"1"所在行的 top 坐标
     w_year1 = next(
-        (w for w in words
-         if w["text"] == "1" and w["x0"] < 60),   # 年度列在最左侧
+        (w for w in words if w["text"] == "1" and w["x0"] < 60),
         None
     )
 
     if hits_12 and hits_34 and hits_100:
         r12  = hits_12[0]
         r34  = hits_34[0]
-        r100 = hits_100[-1]   # 取最后一个（表格最后一行）
+        r100 = hits_100[-1]
 
-        # 表格顶部：列标题行顶部（(1)+(2) 标题的 y0）
-        # 向上再延伸到包含"退保發還金額"大标题行
-        # 找"退保發還金額"
         hits_header = fitz_page.search_for("退保發還金額")
         if hits_header:
             table_top = hits_header[0].y0 - 2
         else:
-            table_top = r12.y0 - 18   # 兜底：往上18pt
+            table_top = r12.y0 - 18
 
-        # 表格底部：100歲行底部
         table_bottom = r100.y1 + 2
 
-        # ── 框1：(1)+(2) 退保总额列 ──────────────────────────
-        # 左边界：(1)+(2) 标题的 x0 再往左留点空间
-        # 右边界：(1)+(2) 标题的 x1 再往右留点空间
-        # 但实际数据列比标题宽，需要找数据的实际右边界
-        # 用 w_100 数据行里 (1)+(2) 列对应数字的位置
-        # 简化：以 r12 为中心，左右各扩展到合理范围
         box1_x0 = r12.x0 - 4
         box1_x1 = r12.x1 + 4
 
-        # 找实际数据宽度：搜索100歲行的数字
-        # (1)+(2) 列的值是 78,949,000，找它
         hits_val = fitz_page.search_for("78,949,000")
         if hits_val:
-            # 找在 r12 列范围附近的那个
             for hv in hits_val:
                 if abs(hv.x0 - r12.x0) < 60:
                     box1_x0 = min(box1_x0, hv.x0 - 3)
@@ -177,19 +143,15 @@ def _annotate_summary(fitz_page, words, policy, font_path):
         rect_box1 = fitz.Rect(box1_x0, table_top, box1_x1, table_bottom)
         _draw_red_box(fitz_page, rect_box1, line_width=1.5)
 
-        # ── 框2：(3)+(4) 理赔总额列 ──────────────────────────
         box2_x0 = r34.x0 - 4
         box2_x1 = r34.x1 + 4
 
-        # 同样找100歲行 (3)+(4) 列的值
-        # (3)+(4) 列的值也是 78,949,000，找右侧那个
         if hits_val and len(hits_val) >= 2:
             for hv in hits_val:
                 if abs(hv.x0 - r34.x0) < 60:
                     box2_x0 = min(box2_x0, hv.x0 - 3)
                     box2_x1 = max(box2_x1, hv.x1 + 3)
                     break
-        # 如果只搜到一个，用 r34 偏移推算
         if box2_x1 - box2_x0 < 20:
             col_w   = box1_x1 - box1_x0
             box2_x0 = r34.x0 - 4
@@ -237,8 +199,7 @@ def redact_personal_info(doc: fitz.Document) -> fitz.Document:
 
     policy_number = None
     if len(doc) > 0:
-        first_page = doc[0]
-        text = first_page.get_text("text")
+        text = doc[0].get_text("text")
         m = re.search(r"[A-Z]{2}\d{6}-\d{10}-\d", text)
         if m:
             policy_number = m.group(0)
@@ -248,31 +209,45 @@ def redact_personal_info(doc: fitz.Document) -> fitz.Document:
         pw   = page.rect.width
         ph   = page.rect.height
 
+        # ── 第一页：固定遮盖右上角条形码区域 ──────────────────
+        if page_num == 0:
+            # 条形码固定在右上角，直接用固定坐标覆盖
+            barcode_rect = fitz.Rect(pw * 0.35, 0, pw, ph * 0.12)
+            page.add_redact_annot(barcode_rect, fill=WHITE)
+
+        # ── 所有页：遮盖保单号文字 ──────────────────────────────
         if policy_number:
             hits = page.search_for(policy_number)
             for rect in hits:
-                cover = fitz.Rect(rect.x0 - 5, rect.y0 - 2, pw, rect.y1 + 2)
-                page.draw_rect(cover, color=WHITE, fill=WHITE)
-                if page_num == 0:
-                    barcode_cover = fitz.Rect(pw * 0.30, rect.y0 - 32, pw, rect.y0 - 1)
-                    page.draw_rect(barcode_cover, color=WHITE, fill=WHITE)
+                page.add_redact_annot(
+                    fitz.Rect(rect.x0 - 5, rect.y0 - 2, pw, rect.y1 + 2),
+                    fill=WHITE
+                )
         else:
-            rect_fallback = fitz.Rect(pw * 0.30, 0, pw, ph * 0.045)
-            page.draw_rect(rect_fallback, color=WHITE, fill=WHITE)
-            if page_num == 0:
-                rect_bc = fitz.Rect(pw * 0.25, 0, pw, ph * 0.095)
-                page.draw_rect(rect_bc, color=WHITE, fill=WHITE)
+            page.add_redact_annot(
+                fitz.Rect(pw * 0.30, 0, pw, ph * 0.045),
+                fill=WHITE
+            )
 
+        # ── 所有页：遮盖底部被保人姓名 ──────────────────────────
         hits_name = page.search_for("被保人姓名")
         if hits_name:
             r = hits_name[0]
-            footer = fitz.Rect(0, r.y0 - 1, pw * 0.38, ph)
-            page.draw_rect(footer, color=WHITE, fill=WHITE)
+            page.add_redact_annot(
+                fitz.Rect(0, r.y0 - 1, pw * 0.38, ph),
+                fill=WHITE
+            )
         else:
-            footer_fallback = fitz.Rect(0, ph * 0.960, pw * 0.38, ph)
-            page.draw_rect(footer_fallback, color=WHITE, fill=WHITE)
+            page.add_redact_annot(
+                fitz.Rect(0, ph * 0.960, pw * 0.38, ph),
+                fill=WHITE
+            )
+
+        # ── 真正执行抹除 ─────────────────────────────────────────
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
 
     return doc
+
 
 def extract_text(pdf_path):
     pages = []
@@ -564,3 +539,37 @@ def annotate_savings_pdf(input_pdf_path, milestones, font_path=None, log=print):
     doc.save(output, garbage=4, deflate=True, clean=True)
     doc.close()
     return output.getvalue()
+'''
+
+# ── 写入 core.py ──────────────────────────────────────────────
+os.makedirs("insurance_app", exist_ok=True)
+with open("insurance_app/core.py", "w", encoding="utf-8") as f:
+    f.write(core_patch.lstrip())
+print("✅ core.py 已写入")
+
+# ── 杀掉旧的 8501 进程 ────────────────────────────────────────
+try:
+    result = subprocess.run(["lsof", "-ti:8501"], capture_output=True, text=True)
+    pids = result.stdout.strip().split("\n")
+    for pid in pids:
+        if pid:
+            os.kill(int(pid), signal.SIGKILL)
+            print(f"🔪 已终止旧进程 PID={pid}")
+except Exception as e:
+    print(f"ℹ️ 无旧进程需要终止: {e}")
+
+# ── 启动 Streamlit ────────────────────────────────────────────
+proc = subprocess.Popen(
+    [sys.executable, "-m", "streamlit", "run",
+     "insurance_app/app.py",
+     "--server.port=8501",
+     "--server.headless=true"],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    text=True
+)
+print(f"🚀 Streamlit 已启动，PID={proc.pid}")
+for i, line in enumerate(proc.stdout):
+    print(line, end="")
+    if i >= 14:
+        break

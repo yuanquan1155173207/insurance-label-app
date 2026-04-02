@@ -1,6 +1,3 @@
-import subprocess, sys, os, signal
-
-core_patch = r'''
 import pdfplumber, fitz, re, os, io
 import pandas as pd
 from dataclasses import dataclass
@@ -87,7 +84,6 @@ def _annotate_summary(fitz_page, words, policy, font_path):
     w_100   = next((w for w in words if "100歲"   in w["text"]), None)
     w_note  = next((w for w in words if "上述年齡" in w["text"]), None)
 
-    # ── 1. 保费/年期提示 ─────────────────────────────────────────
     premium_str = f"{int(policy.annual_premium):,}" if policy.annual_premium else "24,170"
     years_str   = str(int(policy.payment_years))    if policy.payment_years  else "10"
     if w_paid:
@@ -95,7 +91,6 @@ def _annotate_summary(fitz_page, words, policy, font_path):
         _write(fitz_page, f"每年交{premium_str}",     49, by - 12, RED, font_path, fontsize=9)
         _write(fitz_page, f"交{years_str}年不用再交", 49, by - 2,  RED, font_path, fontsize=9)
 
-    # ── 2. 列标签 ────────────────────────────────────────────────
     if w_col12 and w_100:
         _write(fitz_page, "预计的退保价值",
                w_col12["x0"] - 10, w_100["bottom"] + 12,
@@ -106,15 +101,9 @@ def _annotate_summary(fitz_page, words, policy, font_path):
                w_col34["x0"] - 10, w_100["bottom"] + 12,
                GREEN, font_path, fontsize=9)
 
-    # ── 3. 红框 ──────────────────────────────────────────────────
     hits_12  = fitz_page.search_for("(1)+(2)")
     hits_34  = fitz_page.search_for("(3)+(4)")
     hits_100 = fitz_page.search_for("100歲")
-
-    w_year1 = next(
-        (w for w in words if w["text"] == "1" and w["x0"] < 60),
-        None
-    )
 
     if hits_12 and hits_34 and hits_100:
         r12  = hits_12[0]
@@ -128,7 +117,6 @@ def _annotate_summary(fitz_page, words, policy, font_path):
             table_top = r12.y0 - 18
 
         table_bottom = r100.y1 + 2
-
         box1_x0 = r12.x0 - 4
         box1_x1 = r12.x1 + 4
 
@@ -160,7 +148,6 @@ def _annotate_summary(fitz_page, words, policy, font_path):
         rect_box2 = fitz.Rect(box2_x0, table_top, box2_x1, table_bottom)
         _draw_red_box(fitz_page, rect_box2, line_width=1.5)
 
-    # ── 4. 底部 slogan ───────────────────────────────────────────
     slogan_y = (w_note["bottom"] + 20) if w_note else 435
     _write_centered(fitz_page, "有事就赔钱，没事就当存了笔钱",
                     slogan_y, RED, font_path, fontsize=11)
@@ -209,13 +196,10 @@ def redact_personal_info(doc: fitz.Document) -> fitz.Document:
         pw   = page.rect.width
         ph   = page.rect.height
 
-        # ── 第一页：固定遮盖右上角条形码区域 ──────────────────
         if page_num == 0:
-            # 条形码固定在右上角，直接用固定坐标覆盖
             barcode_rect = fitz.Rect(pw * 0.35, 0, pw, ph * 0.12)
             page.add_redact_annot(barcode_rect, fill=WHITE)
 
-        # ── 所有页：遮盖保单号文字 ──────────────────────────────
         if policy_number:
             hits = page.search_for(policy_number)
             for rect in hits:
@@ -229,7 +213,6 @@ def redact_personal_info(doc: fitz.Document) -> fitz.Document:
                 fill=WHITE
             )
 
-        # ── 所有页：遮盖底部被保人姓名 ──────────────────────────
         hits_name = page.search_for("被保人姓名")
         if hits_name:
             r = hits_name[0]
@@ -243,7 +226,6 @@ def redact_personal_info(doc: fitz.Document) -> fitz.Document:
                 fill=WHITE
             )
 
-        # ── 真正执行抹除 ─────────────────────────────────────────
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
 
     return doc
@@ -366,8 +348,6 @@ def annotate_critical_illness_pdf(input_pdf_path, policy, font_path=None):
 
             if not (is_summary or is_multi or is_cancer):
                 continue
-
-            print(f"第 {page_idx+1} 页  summary={is_summary}  multi={is_multi}  cancer={is_cancer}")
 
             if is_summary:
                 _annotate_summary(fitz_page, words, policy, font_path)
@@ -539,37 +519,3 @@ def annotate_savings_pdf(input_pdf_path, milestones, font_path=None, log=print):
     doc.save(output, garbage=4, deflate=True, clean=True)
     doc.close()
     return output.getvalue()
-'''
-
-# ── 写入 core.py ──────────────────────────────────────────────
-os.makedirs("insurance_app", exist_ok=True)
-with open("insurance_app/core.py", "w", encoding="utf-8") as f:
-    f.write(core_patch.lstrip())
-print("✅ core.py 已写入")
-
-# ── 杀掉旧的 8501 进程 ────────────────────────────────────────
-try:
-    result = subprocess.run(["lsof", "-ti:8501"], capture_output=True, text=True)
-    pids = result.stdout.strip().split("\n")
-    for pid in pids:
-        if pid:
-            os.kill(int(pid), signal.SIGKILL)
-            print(f"🔪 已终止旧进程 PID={pid}")
-except Exception as e:
-    print(f"ℹ️ 无旧进程需要终止: {e}")
-
-# ── 启动 Streamlit ────────────────────────────────────────────
-proc = subprocess.Popen(
-    [sys.executable, "-m", "streamlit", "run",
-     "insurance_app/app.py",
-     "--server.port=8501",
-     "--server.headless=true"],
-    stdout=subprocess.PIPE,
-    stderr=subprocess.STDOUT,
-    text=True
-)
-print(f"🚀 Streamlit 已启动，PID={proc.pid}")
-for i, line in enumerate(proc.stdout):
-    print(line, end="")
-    if i >= 14:
-        break

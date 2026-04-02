@@ -8,6 +8,8 @@ def find_chinese_font():
         "font.ttf",
         os.path.join(os.path.dirname(__file__), "font.ttc"),
         os.path.join(os.path.dirname(__file__), "font.ttf"),
+        os.path.join(os.path.dirname(__file__), "font.otf"),
+
     ]
     for p in repo_fonts:
         if os.path.exists(p):

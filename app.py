@@ -149,7 +149,6 @@ with tab_ci:
                     f"{policy.coverage_age} 岁"
                     if policy.coverage_age else "未识别")
 
-                # 第二行：额外保障信息
                 c5, c6, c7, c8 = st.columns(4)
                 c5.metric("额外保障",
                     f"{policy.currency} {int(policy.extra_sum_insured):,}"
@@ -186,10 +185,10 @@ with tab_ci:
                     new_ratio = col_g.number_input(
                         "额外比例%", value=int(policy.extra_ratio),
                         min_value=0, step=10)
-                    new_currency = col_h.selectbox(
-                        "货币", ["美金","港幣","人民幣"],
-                        index=["美金","港幣","人民幣"].index(policy.currency)
-                              if policy.currency in ["美金","港幣","人民幣"] else 1)
+                    currency_options = ["美金","港幣","人民幣"]
+                    default_cur_idx = currency_options.index(policy.currency) \
+                        if policy.currency in currency_options else 1
+                    new_currency = col_h.selectbox("货币", currency_options, index=default_cur_idx)
 
                     if st.button("✅ 应用修正"):
                         policy.base_sum_insured  = new_base
@@ -268,4 +267,76 @@ with tab_sv:
                 f.write(uploaded_sv.getvalue())
 
             log_msgs = []
-            def sv_log(ms
+            def sv_log(msg): log_msgs.append(msg)
+
+            progress_sv = st.progress(0, text="正在解析文本数据...")
+            try:
+                progress_sv.progress(30, text="提取年度数据...")
+                df = extract_supplement_table(sv_input, log=sv_log)
+                for msg in log_msgs:
+                    st.caption(msg)
+
+                if df.empty:
+                    progress_sv.empty()
+                    st.error("❌ 未能识别到有效数据，请确认 PDF 包含「補充說明摘要」页")
+                else:
+                    progress_sv.progress(55, text="检测关键节点...")
+                    milestones = find_key_milestones(df, log=sv_log)
+                    st.success(f"✅ 成功解析 {len(df)} 年数据，检测到 {len(milestones)} 个关键节点")
+
+                    st.subheader("📍 关键节点")
+                    key_labels = {0:"🟢 保本", 1:"🟡 翻倍 (2x)", 2:"🟠 再翻倍 (4x)"}
+                    if milestones:
+                        cols = st.columns(len(milestones))
+                        for i, (col, ms) in enumerate(zip(cols, milestones)):
+                            sv_val = df[df["year"]==ms["year"]]["surrender_total"].values
+                            sv_str = f"退保 ${int(sv_val[0]):,}" if len(sv_val) else ""
+                            col.metric(key_labels.get(i,f"节点{i+1}"),
+                                       f"第 {ms['year']} 年", delta=sv_str)
+
+                    st.subheader("📊 数据预览（前20行）")
+                    preview_rows = [
+                        {"年度": str(r["year"]),
+                         "已缴保费": f"{r['paid_total']:,}",
+                         "退保总额": f"{r['surrender_total']:,}",
+                         "身故赔付": f"{r['death_total']:,}"}
+                        for r in df.head(20).to_dict("records")
+                    ]
+                    st.dataframe(pd.DataFrame(preview_rows),
+                                 use_container_width=True, hide_index=True)
+
+                    st.divider()
+                    progress_sv.progress(75, text="生成标注 PDF...")
+                    sv_pdf_bytes = annotate_savings_pdf(
+                        sv_input, milestones, font_path=font_path, log=sv_log)
+
+                    with open(sv_output,"wb") as f:
+                        f.write(sv_pdf_bytes)
+
+                    progress_sv.progress(100, text="✅ 完成！")
+
+                    st.subheader("🖼️ 预览标注效果")
+                    doc_sv = fitz.open(sv_output)
+                    sv_pages = [p-1 for p in preview_pages if 0 < p <= len(doc_sv)] or [0]
+                    sv_tabs  = st.tabs([f"第 {p+1} 页" for p in sv_pages])
+                    for tab_p, p_idx in zip(sv_tabs, sv_pages):
+                        with tab_p:
+                            mat = fitz.Matrix(preview_dpi/72, preview_dpi/72)
+                            pix = doc_sv[p_idx].get_pixmap(matrix=mat, alpha=False)
+                            st.image(pix.tobytes("png"), use_container_width=True)
+                    doc_sv.close()
+
+                    st.divider()
+                    st.download_button(
+                        "📥 下载储蓄险标注版 PDF", data=sv_pdf_bytes,
+                        file_name=uploaded_sv.name.replace(".pdf","_储蓄标注版.pdf"),
+                        mime="application/pdf",
+                        use_container_width=True, type="primary")
+
+            except Exception as e:
+                progress_sv.empty()
+                st.error(f"❌ 处理失败：{e}")
+                st.exception(e)
+
+st.divider()
+st.caption("保险建议书自动标注工具 · 仅供参考，不构成投资建议")

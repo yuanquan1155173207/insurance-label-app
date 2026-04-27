@@ -3,6 +3,18 @@ import pandas as pd
 from dataclasses import dataclass
 
 def find_chinese_font():
+    repo_fonts = [
+        "font.otf",
+        "font.ttc",
+        "font.ttf",
+        os.path.join(os.path.dirname(__file__), "font.otf"),
+        os.path.join(os.path.dirname(__file__), "font.ttc"),
+        os.path.join(os.path.dirname(__file__), "font.ttf"),
+    ]
+    for p in repo_fonts:
+        if os.path.exists(p):
+            return p
+
     candidates = [
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/PingFang.ttc",
@@ -19,6 +31,7 @@ def find_chinese_font():
         if os.path.exists(p):
             return p
     return None
+
 
 @dataclass
 class CriticalIllnessPolicy:

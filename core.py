@@ -184,15 +184,12 @@ def _annotate_cover(fitz_page, words, policy, font_path):
     base_row_rect  = None
     extra_row_rect = None
 
-    # 搜索基本计划行（含保额数字的那行）
     base_num_str = f"{int(policy.base_sum_insured):,}" if policy.base_sum_insured else "1,000,000"
     hits_base_num = fitz_page.search_for(base_num_str)
     if hits_base_num:
         r = hits_base_num[0]
-        # 整行横跨页面宽度
         base_row_rect = fitz.Rect(r.x0 - 200, r.y0 - 1, r.x1 + 60, r.y1 + 1)
 
-    # 搜索额外保障行（含额外保额数字的那行）
     extra_num_str = f"{int(policy.extra_sum_insured):,}" if policy.extra_sum_insured else "500,000"
     hits_extra_num = fitz_page.search_for(extra_num_str)
     if hits_extra_num:
@@ -215,7 +212,7 @@ def _annotate_cover(fitz_page, words, policy, font_path):
     if y2 - y1 < 20:
         y2 = y1 + 24
 
-    # ── 画横线框（underline 样式，框住数字行） ──
+    # ── 画横线框 ──
     shape = fitz_page.new_shape()
     if base_row_rect:
         shape.draw_rect(base_row_rect)
@@ -231,10 +228,8 @@ def _annotate_cover(fitz_page, words, policy, font_path):
 
     # ── 画箭头：line1 → 基本计划行 ──
     if base_row_rect:
-        # 箭头起点：line1 文字右侧
         arrow_x0 = 40 + len(line1) * 11 * 0.55
-        arrow_y0 = y1 - 3  # 文字中间高度
-        # 箭头终点：基本计划行左侧
+        arrow_y0 = y1 - 3
         arrow_x1 = base_row_rect.x0 + 205
         arrow_y1 = (base_row_rect.y0 + base_row_rect.y1) / 2
 
@@ -243,10 +238,34 @@ def _annotate_cover(fitz_page, words, policy, font_path):
             fitz.Point(arrow_x0, arrow_y0),
             fitz.Point(arrow_x1, arrow_y1)
         )
-        shape2.finish(color=RED, width=1.2,
-                      closePath=False,
-                      end_point=fitz.Point(arrow_x1, arrow_y1))
+        shape2.finish(color=RED, width=1.2, closePath=False)
         shape2.commit()
+
+        _draw_arrowhead(fitz_page, arrow_x0, arrow_y0, arrow_x1, arrow_y1)
+
+    # ── 画箭头：line2 → 基本计划行年保费位置 ──
+    if base_row_rect:
+        premium_str_search = f"{premium:,}.00" if premium > 0 else ""
+        hits_prem = fitz_page.search_for(premium_str_search) if premium_str_search else []
+        if hits_prem:
+            target_x = (hits_prem[0].x0 + hits_prem[0].x1) / 2
+            target_y = (hits_prem[0].y0 + hits_prem[0].y1) / 2
+        else:
+            target_x = base_row_rect.x0 + 250
+            target_y = (base_row_rect.y0 + base_row_rect.y1) / 2
+
+        arrow_x0 = 40 + len(line2) * 11 * 0.55
+        arrow_y0 = y2 - 3
+
+        shape3 = fitz_page.new_shape()
+        shape3.draw_line(
+            fitz.Point(arrow_x0, arrow_y0),
+            fitz.Point(target_x,  target_y)
+        )
+        shape3.finish(color=RED, width=1.2, closePath=False)
+        shape3.commit()
+
+        _draw_arrowhead(fitz_page, arrow_x0, arrow_y0, target_x, target_y)
 
         # 手动画箭头头部（小三角）
         _draw_arrowhead(fitz_page, arrow_x0, arrow_y0, arrow_x1, arrow_y1)

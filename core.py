@@ -357,7 +357,7 @@ def _find_text_bbox(page: fitz.Page, search: str):
 def redact_personal_info(doc: fitz.Document) -> fitz.Document:
     WHITE = (1, 1, 1)
 
-    # 提取保单号
+    # 提取保单号（用于后续页匹配）
     policy_number = None
     for page in doc:
         text = page.get_text("text")
@@ -373,13 +373,22 @@ def redact_personal_info(doc: fitz.Document) -> fitz.Document:
 
         redact_rects = []
 
-        # ── 保单号 + 条形码 ──
-        if policy_number:
+        # ── 首页：无论如何都遮右上角（条形码是图片，无文字可搜索） ──
+        if page_num == 0:
+            # 找"愛唯守危疾保障"标题，遮标题以上的右侧区域
+            hits_title = page.search_for("愛唯守危疾保障")
+            if hits_title:
+                title_y = hits_title[0].y0
+                redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, title_y - 2))
+            else:
+                # 兜底：遮右上角固定区域
+                redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, ph * 0.18))
+
+        # ── 其他页：只在真正找到保单号文字时才遮 ──
+        if policy_number and page_num > 0:
             hits = page.search_for(policy_number)
             if hits:
                 for rect in hits:
-                    # 从页面顶部一直遮到保单号文字底部，右侧40%区域
-                    # 这样条形码（在保单号上方）也一并被盖住
                     redact_rects.append(
                         fitz.Rect(pw * 0.35, 0, pw, rect.y1 + 3)
                     )

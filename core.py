@@ -373,21 +373,18 @@ def redact_personal_info(doc: fitz.Document) -> fitz.Document:
 
         redact_rects = []
 
-        # ── 保单号 + 条形码：只在该页真正找到保单号时才处理 ──
+        # ── 保单号 + 条形码 ──
         if policy_number:
             hits = page.search_for(policy_number)
             if hits:
                 for rect in hits:
-                    # 遮保单号文字行
+                    # 从页面顶部一直遮到保单号文字底部，右侧40%区域
+                    # 这样条形码（在保单号上方）也一并被盖住
                     redact_rects.append(
-                        fitz.Rect(rect.x0 - 5, rect.y0 - 2, pw, rect.y1 + 2)
-                    )
-                    # 条形码：该行上方到页面顶部，右侧区域
-                    redact_rects.append(
-                        fitz.Rect(pw * 0.35, 0, pw, rect.y0 - 1)
+                        fitz.Rect(pw * 0.35, 0, pw, rect.y1 + 3)
                     )
 
-        # ── 左下角页脚（被保人姓名那行开始往下） ──
+        # ── 左下角页脚（被保人姓名） ──
         hits_name = page.search_for("被保人姓名")
         if hits_name:
             r = hits_name[0]
@@ -395,12 +392,13 @@ def redact_personal_info(doc: fitz.Document) -> fitz.Document:
         else:
             redact_rects.append(fitz.Rect(0, ph * 0.960, pw * 0.38, ph))
 
-        # ── 用 redact annot 真正删除底层文字（不可再选中） ──
+        # ── 真正删除底层文字 ──
         for rect in redact_rects:
             page.add_redact_annot(rect, fill=WHITE)
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
 
     return doc
+
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -119,6 +119,16 @@ def _draw_red_box(fitz_page, rect, line_width=1.5):
     shape.finish(color=RED, fill=None, width=line_width)
     shape.commit()
 
+def _draw_underline(fitz_page, rect, line_width=1.5):
+    """只画下划线，不画整个框"""
+    shape = fitz_page.new_shape()
+    shape.draw_line(
+        fitz.Point(rect.x0, rect.y1),
+        fitz.Point(rect.x1, rect.y1)
+    )
+    shape.finish(color=RED, width=line_width, closePath=False)
+    shape.commit()
+
 
 # ═══════════════════════════════════════════════════════════════
 # 行分桶工具
@@ -172,7 +182,6 @@ def _draw_arrowhead(page, x0, y0, x1, y1, size=6):
 def _annotate_cover(fitz_page, words, policy, font_path):
     hits_extra = fitz_page.search_for("額外保障")
     hits_base  = fitz_page.search_for("愛唯守危疾保障")
-    hits_total = fitz_page.search_for("投保時每年總保費")
 
     base_str  = _format_wan(policy.base_sum_insured, policy.currency)
     ratio     = policy.extra_ratio or 50
@@ -185,7 +194,9 @@ def _annotate_cover(fitz_page, words, policy, font_path):
     age_str     = str(int(policy.coverage_age))  if policy.coverage_age  else "100"
     line2 = f"年保費是{premium_str}，交{years_str}年，保到{age_str}歲"
 
-    # ── 找基本计划行和额外保障行的 bbox ──
+    pw = fitz_page.rect.width
+
+    # ── 找数字实际位置 ──
     base_row_rect  = None
     extra_row_rect = None
 
@@ -193,17 +204,15 @@ def _annotate_cover(fitz_page, words, policy, font_path):
     hits_base_num = fitz_page.search_for(base_num_str)
     if hits_base_num:
         r = hits_base_num[0]
-        base_row_rect = fitz.Rect(r.x0 - 200, r.y0 - 1, r.x1 + 60, r.y1 + 1)
+        base_row_rect = fitz.Rect(r.x0 - 4, r.y0 - 2, r.x1 + 4, r.y1 + 2)
 
     extra_num_str = f"{int(policy.extra_sum_insured):,}" if policy.extra_sum_insured else "500,000"
     hits_extra_num = fitz_page.search_for(extra_num_str)
     if hits_extra_num:
         r = hits_extra_num[0]
-        extra_row_rect = fitz.Rect(r.x0 - 200, r.y0 - 1, r.x1 + 60, r.y1 + 1)
+        extra_row_rect = fitz.Rect(r.x0 - 4, r.y0 - 2, r.x1 + 4, r.y1 + 2)
 
-    # ── 计算文字写入位置 ──
-    pw = fitz_page.rect.width
-
+    # ── 文字位置 ──
     if extra_row_rect:
         y1 = extra_row_rect.y1 + 18
     elif hits_extra:
@@ -213,31 +222,26 @@ def _annotate_cover(fitz_page, words, policy, font_path):
     else:
         y1 = fitz_page.rect.height * 0.42
 
-    # line2 在 line1 下方，右侧偏移（模拟错落布局）
-    y2 = y1 + 30
-    x1_pos = 36         # line1 左侧
-    x2_pos = pw * 0.42  # line2 右侧偏移
+    y2     = y1 + 30
+    x1_pos = 36
+    x2_pos = pw * 0.42
 
-    # ── 画横线框 ──
-    shape = fitz_page.new_shape()
+    # ── 画下划线（替代红框） ──
     if base_row_rect:
-        shape.draw_rect(base_row_rect)
-        shape.finish(color=RED, fill=None, width=1.2)
+        _draw_underline(fitz_page, base_row_rect, line_width=1.5)
     if extra_row_rect:
-        shape.draw_rect(extra_row_rect)
-        shape.finish(color=RED, fill=None, width=1.2)
-    shape.commit()
+        _draw_underline(fitz_page, extra_row_rect, line_width=1.5)
 
     # ── 写文字 ──
     _write(fitz_page, line1, x1_pos, y1, RED, font_path, fontsize=12)
     _write(fitz_page, line2, x2_pos, y2, RED, font_path, fontsize=12)
 
-    # ── 画箭头：line1 → 额外保障行（保额列） ──
+    # ── 箭头：line1 → 额外保障行保额数字 ──
     if extra_row_rect:
         ax0 = x1_pos + len(line1) * 12 * 0.52
         ay0 = y1 - 4
-        ax1 = extra_row_rect.x0 + 205
-        ay1 = (extra_row_rect.y0 + extra_row_rect.y1) / 2
+        ax1 = (extra_row_rect.x0 + extra_row_rect.x1) / 2
+        ay1 = extra_row_rect.y0
 
         shape2 = fitz_page.new_shape()
         shape2.draw_line(fitz.Point(ax0, ay0), fitz.Point(ax1, ay1))
@@ -245,16 +249,16 @@ def _annotate_cover(fitz_page, words, policy, font_path):
         shape2.commit()
         _draw_arrowhead(fitz_page, ax0, ay0, ax1, ay1)
 
-    # ── 画箭头：line2 → 基本计划行年保费位置 ──
+    # ── 箭头：line2 → 年保费数字 ──
     if base_row_rect:
         premium_str_search = f"{premium:,}.00" if premium > 0 else ""
         hits_prem = fitz_page.search_for(premium_str_search) if premium_str_search else []
         if hits_prem:
             target_x = (hits_prem[0].x0 + hits_prem[0].x1) / 2
-            target_y = (hits_prem[0].y0 + hits_prem[0].y1) / 2
+            target_y = hits_prem[0].y0
         else:
-            target_x = base_row_rect.x0 + 280
-            target_y = (base_row_rect.y0 + base_row_rect.y1) / 2
+            target_x = base_row_rect.x1 + 60
+            target_y = base_row_rect.y0
 
         ax0 = x2_pos + len(line2) * 12 * 0.52
         ay0 = y2 - 4
@@ -373,19 +377,20 @@ def redact_personal_info(doc: fitz.Document) -> fitz.Document:
         if policy_number:
             hits = page.search_for(policy_number)
             for rect in hits:
+                # 遮盖保单号文字
                 cover = fitz.Rect(rect.x0 - 5, rect.y0 - 2, pw, rect.y1 + 2)
                 page.draw_rect(cover, color=WHITE, fill=WHITE)
 
-                is_barcode_page = rect.y0 < ph * 0.125
+                # 放宽到页面上方 20% 内都遮条形码
+                is_barcode_page = rect.y0 < ph * 0.20
                 if is_barcode_page:
-                    barcode_cover = fitz.Rect(pw * 0.30, rect.y0 - 36, pw, rect.y0 - 1)
+                    barcode_cover = fitz.Rect(pw * 0.25, 0, pw, rect.y0 - 1)
                     page.draw_rect(barcode_cover, color=WHITE, fill=WHITE)
         else:
-            rect_fallback = fitz.Rect(pw * 0.30, 0, pw, ph * 0.045)
+            rect_fallback = fitz.Rect(pw * 0.25, 0, pw, ph * 0.095)
             page.draw_rect(rect_fallback, color=WHITE, fill=WHITE)
-            rect_bc = fitz.Rect(pw * 0.25, 0, pw, ph * 0.095)
-            page.draw_rect(rect_bc, color=WHITE, fill=WHITE)
 
+        # 遮盖左下角页脚
         hits_name = page.search_for("被保人姓名")
         if hits_name:
             r = hits_name[0]

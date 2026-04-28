@@ -1,8 +1,20 @@
-import pdfplumber, fitz, re, os, io
+import pdfplumber, fitz, re, os, io, math
 import pandas as pd
 from dataclasses import dataclass
 
 def find_chinese_font():
+    repo_fonts = [
+        "font.otf",
+        "font.ttc",
+        "font.ttf",
+        os.path.join(os.path.dirname(__file__), "font.otf"),
+        os.path.join(os.path.dirname(__file__), "font.ttc"),
+        os.path.join(os.path.dirname(__file__), "font.ttf"),
+    ]
+    for p in repo_fonts:
+        if os.path.exists(p):
+            return p
+
     candidates = [
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/PingFang.ttc",
@@ -30,7 +42,6 @@ class CriticalIllnessPolicy:
     payment_years:             int   = 0
     coverage_age:              int   = 100
     continuous_cancer_monthly: float = 0
-    # 新增字段
     base_sum_insured:          float = 0
     extra_sum_insured:         float = 0
     extra_years:               int   = 10
@@ -132,38 +143,32 @@ def _group_by_rows(words, tolerance=4):
 
 
 # ═══════════════════════════════════════════════════════════════
-# 1. 保障摘要页（首页）标识
+# 箭头辅助
 # ═══════════════════════════════════════════════════════════════
-
 def _draw_arrowhead(page, x0, y0, x1, y1, size=6):
-    """在 (x1,y1) 处画一个指向该点的箭头头部"""
-    import math
     dx = x1 - x0
     dy = y1 - y0
     length = math.hypot(dx, dy)
     if length == 0:
         return
-    # 单位向量
     ux = dx / length
     uy = dy / length
-    # 垂直向量
     vx = -uy
     vy =  ux
-
-    # 箭头两翼
-    p1 = fitz.Point(x1 - size * ux + size * 0.5 * vx,
-                    y1 - size * uy + size * 0.5 * vy)
-    p2 = fitz.Point(x1 - size * ux - size * 0.5 * vx,
-                    y1 - size * uy - size * 0.5 * vy)
+    p1  = fitz.Point(x1 - size * ux + size * 0.5 * vx,
+                     y1 - size * uy + size * 0.5 * vy)
+    p2  = fitz.Point(x1 - size * ux - size * 0.5 * vx,
+                     y1 - size * uy - size * 0.5 * vy)
     tip = fitz.Point(x1, y1)
-
     shape = page.new_shape()
     shape.draw_polyline([p1, tip, p2])
     shape.finish(color=RED, fill=RED, width=1.0, closePath=False)
     shape.commit()
 
 
-
+# ═══════════════════════════════════════════════════════════════
+# 1. 保障摘要页（首页）标识
+# ═══════════════════════════════════════════════════════════════
 def _annotate_cover(fitz_page, words, policy, font_path):
     hits_extra = fitz_page.search_for("額外保障")
     hits_base  = fitz_page.search_for("愛唯守危疾保障")
@@ -197,20 +202,21 @@ def _annotate_cover(fitz_page, words, policy, font_path):
         extra_row_rect = fitz.Rect(r.x0 - 200, r.y0 - 1, r.x1 + 60, r.y1 + 1)
 
     # ── 计算文字写入位置 ──
-    if hits_extra:
-        y1 = hits_extra[0].y1 + 14
+    pw = fitz_page.rect.width
+
+    if extra_row_rect:
+        y1 = extra_row_rect.y1 + 18
+    elif hits_extra:
+        y1 = hits_extra[0].y1 + 18
     elif hits_base:
         y1 = hits_base[-1].y1 + 30
     else:
         y1 = fitz_page.rect.height * 0.42
 
-    if hits_total:
-        y2 = hits_total[0].y0 - 14
-    else:
-        y2 = y1 + 40
-
-    if y2 - y1 < 20:
-        y2 = y1 + 24
+    # line2 在 line1 下方，右侧偏移（模拟错落布局）
+    y2 = y1 + 30
+    x1_pos = 36         # line1 左侧
+    x2_pos = pw * 0.42  # line2 右侧偏移
 
     # ── 画横线框 ──
     shape = fitz_page.new_shape()
@@ -223,52 +229,21 @@ def _annotate_cover(fitz_page, words, policy, font_path):
     shape.commit()
 
     # ── 写文字 ──
-    _write(fitz_page, line1, 40, y1, RED, font_path, fontsize=11)
-    _write(fitz_page, line2, 40, y2, RED, font_path, fontsize=11)
+    _write(fitz_page, line1, x1_pos, y1, RED, font_path, fontsize=12)
+    _write(fitz_page, line2, x2_pos, y2, RED, font_path, fontsize=12)
 
-    # ── 画箭头：line1 → 基本计划行 ──
-    if base_row_rect:
-        arrow_x0 = 40 + len(line1) * 11 * 0.55
-        arrow_y0 = y1 - 3
-        arrow_x1 = base_row_rect.x0 + 205
-        arrow_y1 = (base_row_rect.y0 + base_row_rect.y1) / 2
+    # ── 画箭头：line1 → 额外保障行（保额列） ──
+    if extra_row_rect:
+        ax0 = x1_pos + len(line1) * 12 * 0.52
+        ay0 = y1 - 4
+        ax1 = extra_row_rect.x0 + 205
+        ay1 = (extra_row_rect.y0 + extra_row_rect.y1) / 2
 
         shape2 = fitz_page.new_shape()
-        shape2.draw_line(
-            fitz.Point(arrow_x0, arrow_y0),
-            fitz.Point(arrow_x1, arrow_y1)
-        )
+        shape2.draw_line(fitz.Point(ax0, ay0), fitz.Point(ax1, ay1))
         shape2.finish(color=RED, width=1.2, closePath=False)
         shape2.commit()
-
-        _draw_arrowhead(fitz_page, arrow_x0, arrow_y0, arrow_x1, arrow_y1)
-
-    # ── 画箭头：line2 → 基本计划行年保费位置 ──
-    if base_row_rect:
-        premium_str_search = f"{premium:,}.00" if premium > 0 else ""
-        hits_prem = fitz_page.search_for(premium_str_search) if premium_str_search else []
-        if hits_prem:
-            target_x = (hits_prem[0].x0 + hits_prem[0].x1) / 2
-            target_y = (hits_prem[0].y0 + hits_prem[0].y1) / 2
-        else:
-            target_x = base_row_rect.x0 + 250
-            target_y = (base_row_rect.y0 + base_row_rect.y1) / 2
-
-        arrow_x0 = 40 + len(line2) * 11 * 0.55
-        arrow_y0 = y2 - 3
-
-        shape3 = fitz_page.new_shape()
-        shape3.draw_line(
-            fitz.Point(arrow_x0, arrow_y0),
-            fitz.Point(target_x,  target_y)
-        )
-        shape3.finish(color=RED, width=1.2, closePath=False)
-        shape3.commit()
-
-        _draw_arrowhead(fitz_page, arrow_x0, arrow_y0, target_x, target_y)
-
-        # 手动画箭头头部（小三角）
-        _draw_arrowhead(fitz_page, arrow_x0, arrow_y0, arrow_x1, arrow_y1)
+        _draw_arrowhead(fitz_page, ax0, ay0, ax1, ay1)
 
     # ── 画箭头：line2 → 基本计划行年保费位置 ──
     if base_row_rect:
@@ -278,21 +253,18 @@ def _annotate_cover(fitz_page, words, policy, font_path):
             target_x = (hits_prem[0].x0 + hits_prem[0].x1) / 2
             target_y = (hits_prem[0].y0 + hits_prem[0].y1) / 2
         else:
-            target_x = base_row_rect.x0 + 250
+            target_x = base_row_rect.x0 + 280
             target_y = (base_row_rect.y0 + base_row_rect.y1) / 2
 
-        arrow_x0 = 40 + len(line2) * 11 * 0.55
-        arrow_y0 = y2 - 3
+        ax0 = x2_pos + len(line2) * 12 * 0.52
+        ay0 = y2 - 4
 
         shape3 = fitz_page.new_shape()
-        shape3.draw_line(
-            fitz.Point(arrow_x0, arrow_y0),
-            fitz.Point(target_x,  target_y)
-        )
+        shape3.draw_line(fitz.Point(ax0, ay0), fitz.Point(target_x, target_y))
         shape3.finish(color=RED, width=1.2, closePath=False)
         shape3.commit()
+        _draw_arrowhead(fitz_page, ax0, ay0, target_x, target_y)
 
-        _draw_arrowhead(fitz_page, arrow_x0, arrow_y0, target_x, target_y)
 
 # ═══════════════════════════════════════════════════════════════
 # 2. 說明摘要页标识
@@ -330,8 +302,8 @@ def _annotate_summary(fitz_page, words, policy, font_path):
         r34  = hits_34[0]
         r100 = hits_100[-1]
 
-        hits_header = fitz_page.search_for("退保發還金額")
-        table_top = hits_header[0].y0 - 2 if hits_header else r12.y0 - 18
+        hits_header  = fitz_page.search_for("退保發還金額")
+        table_top    = hits_header[0].y0 - 2 if hits_header else r12.y0 - 18
         table_bottom = r100.y1 + 2
 
         rect_box1 = fitz.Rect(r12.x0 - 4, table_top, r12.x1 + 4, table_bottom)
@@ -385,7 +357,6 @@ def _find_text_bbox(page: fitz.Page, search: str):
 def redact_personal_info(doc: fitz.Document) -> fitz.Document:
     WHITE = (1, 1, 1)
 
-    # 第一步：提取保单号
     policy_number = None
     for page in doc:
         text = page.get_text("text")
@@ -402,38 +373,29 @@ def redact_personal_info(doc: fitz.Document) -> fitz.Document:
         if policy_number:
             hits = page.search_for(policy_number)
             for rect in hits:
-                # 遮盖保单号本身（从保单号到页面右边）
                 cover = fitz.Rect(rect.x0 - 5, rect.y0 - 2, pw, rect.y1 + 2)
                 page.draw_rect(cover, color=WHITE, fill=WHITE)
 
-                # 判断是否是"有条形码的页"：保单号在页面上方 1/8 以内
                 is_barcode_page = rect.y0 < ph * 0.125
                 if is_barcode_page:
-                    # 遮盖条形码（保单号上方区域，右侧约70%宽度）
                     barcode_cover = fitz.Rect(pw * 0.30, rect.y0 - 36, pw, rect.y0 - 1)
                     page.draw_rect(barcode_cover, color=WHITE, fill=WHITE)
         else:
-            # 没找到保单号，用位置兜底
             rect_fallback = fitz.Rect(pw * 0.30, 0, pw, ph * 0.045)
             page.draw_rect(rect_fallback, color=WHITE, fill=WHITE)
-            # 兜底也遮条形码区域
             rect_bc = fitz.Rect(pw * 0.25, 0, pw, ph * 0.095)
             page.draw_rect(rect_bc, color=WHITE, fill=WHITE)
 
-        # 遮盖左下角页脚（被保人姓名那行开始往下）
         hits_name = page.search_for("被保人姓名")
         if hits_name:
             r = hits_name[0]
-            # 只遮左侧约38%宽度（保单号/顾问名在右侧，不要全遮）
             footer = fitz.Rect(0, r.y0 - 1, pw * 0.38, ph)
             page.draw_rect(footer, color=WHITE, fill=WHITE)
         else:
-            # 兜底：遮盖页面底部4%
             footer_fallback = fitz.Rect(0, ph * 0.960, pw * 0.38, ph)
             page.draw_rect(footer_fallback, color=WHITE, fill=WHITE)
 
     return doc
-
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -483,7 +445,6 @@ def extract_fields(text):
 
 
 def extract_fields_from_cover_page(pdf_path, debug=True):
-    """从首页保障摘要提取：保额/交费年期/保障至年龄/额外保障"""
     result = {}
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
@@ -493,7 +454,6 @@ def extract_fields_from_cover_page(pdf_path, debug=True):
 
             words = page.extract_words()
 
-            # —— 总保费 & 货币 ——
             m = re.search(r"投保時每年總保費[：:]?\s*([\d,]+\.?\d*)", full_text)
             if m:
                 try:
@@ -505,7 +465,6 @@ def extract_fields_from_cover_page(pdf_path, debug=True):
             if m:
                 result["currency"] = m.group(1)
 
-            # —— 分行 ——
             rows = _group_by_rows(words, tolerance=4)
 
             def _num(s):
@@ -514,20 +473,13 @@ def extract_fields_from_cover_page(pdf_path, debug=True):
                 except Exception:
                     return None
 
-            # —— 找基本计划行：大额数字 + "X年" ——
             base_row = None
             for y, row_ws in rows:
                 texts  = [w["text"] for w in row_ws]
                 joined = " ".join(texts)
-
-                has_big_num = any(
-                    _num(t) and _num(t) >= 100000 for t in texts
-                )
-                has_years = any(
-                    re.fullmatch(r"\d{1,2}年", t) for t in texts
-                )
-                has_hgs = ("HGS" in joined or "危疾保障" in joined)
-
+                has_big_num = any(_num(t) and _num(t) >= 100000 for t in texts)
+                has_years   = any(re.fullmatch(r"\d{1,2}年", t) for t in texts)
+                has_hgs     = ("HGS" in joined or "危疾保障" in joined)
                 if has_big_num and has_years and has_hgs:
                     base_row = row_ws
                     if debug:
@@ -536,7 +488,7 @@ def extract_fields_from_cover_page(pdf_path, debug=True):
 
             if base_row is None:
                 for y, row_ws in rows:
-                    texts = [w["text"] for w in row_ws]
+                    texts   = [w["text"] for w in row_ws]
                     has_big = any(_num(t) and _num(t) >= 100000 for t in texts)
                     has_yr  = any(re.fullmatch(r"\d{1,2}年", t) for t in texts)
                     if has_big and has_yr:
@@ -545,13 +497,11 @@ def extract_fields_from_cover_page(pdf_path, debug=True):
                             print(f"📍 基本计划行(退化) y={y:.1f}: {' '.join(texts)}")
                         break
 
-            # —— 抓 4 个字段 ——
             if base_row:
                 nums_numeric = []
                 years_val    = None
-
                 for w in base_row:
-                    t = w["text"]
+                    t    = w["text"]
                     m_yr = re.fullmatch(r"(\d{1,2})年", t)
                     if m_yr:
                         yr = int(m_yr.group(1))
@@ -561,21 +511,17 @@ def extract_fields_from_cover_page(pdf_path, debug=True):
                     v = _num(t)
                     if v is not None:
                         nums_numeric.append((w["x0"], v))
-
                 nums_numeric.sort(key=lambda t: t[0])
                 nums = [v for _, v in nums_numeric]
-
                 if len(nums) >= 1 and nums[0] >= 10000:
                     result["base_sum_insured"] = nums[0]
                 if len(nums) >= 2 and nums[1] > 100 and "annual_premium" not in result:
                     result["annual_premium"] = nums[1]
                 if len(nums) >= 3 and 60 <= int(nums[-1]) <= 120:
                     result["coverage_age"] = int(nums[-1])
-
                 if years_val:
                     result["payment_years"] = years_val
 
-            # —— 额外保障行 ——
             extra_row = None
             for y, row_ws in rows:
                 joined = " ".join(w["text"] for w in row_ws)
@@ -590,19 +536,16 @@ def extract_fields_from_cover_page(pdf_path, debug=True):
                 m_ext_yr = re.search(r"首\s*(\d{1,2})\s*年", joined_extra)
                 if m_ext_yr:
                     result["extra_years"] = int(m_ext_yr.group(1))
-
                 for w in extra_row:
                     v = _num(w["text"])
                     if v is not None and v >= 10000:
                         result["extra_sum_insured"] = v
                         break
 
-            # —— 额外保障比例 ——
             if result.get("base_sum_insured") and result.get("extra_sum_insured"):
                 ratio = result["extra_sum_insured"] / result["base_sum_insured"] * 100
                 result["extra_ratio"] = int(round(ratio / 10) * 10)
 
-            # —— 兜底 ——
             if "payment_years" not in result:
                 m = re.search(r"(\d{1,2})\s*年\s+1?00\b", full_text)
                 if m:
@@ -612,7 +555,6 @@ def extract_fields_from_cover_page(pdf_path, debug=True):
 
             if debug:
                 print(f"✅ 首页提取结果: {result}")
-
             break
 
     return result
@@ -622,8 +564,8 @@ def extract_fields_from_summary_page(pdf_path):
     result = {}
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            words      = page.extract_words()
-            full_text  = page.extract_text() or ""
+            words     = page.extract_words()
+            full_text = page.extract_text() or ""
 
             if "保費繳付年期" not in full_text and "繳費年期" not in full_text:
                 continue

@@ -195,7 +195,7 @@ def _annotate_cover(fitz_page, words, policy, font_path):
 
     pw = fitz_page.rect.width
 
-    # ── 找数字实际位置 ──
+    # ── 找保额数字位置 ──
     base_num_rect  = None
     extra_num_rect = None
 
@@ -203,71 +203,69 @@ def _annotate_cover(fitz_page, words, policy, font_path):
     hits_base_num = fitz_page.search_for(base_num_str)
     if hits_base_num:
         r = hits_base_num[0]
-        base_num_rect = fitz.Rect(r.x0 - 4, r.y0 - 2, r.x1 + 4, r.y1 + 2)
+        base_num_rect = fitz.Rect(r.x0 - 2, r.y0 - 1, r.x1 + 2, r.y1 + 1)
 
     extra_num_str = f"{int(policy.extra_sum_insured):,}" if policy.extra_sum_insured else "500,000"
     hits_extra_num = fitz_page.search_for(extra_num_str)
     if hits_extra_num:
         r = hits_extra_num[0]
-        extra_num_rect = fitz.Rect(r.x0 - 4, r.y0 - 2, r.x1 + 4, r.y1 + 2)
+        extra_num_rect = fitz.Rect(r.x0 - 2, r.y0 - 1, r.x1 + 2, r.y1 + 1)
 
-    # ── 找年保费数字位置 ──
+    # ── 找年保费数字位置（用于 line2 箭头终点） ──
     premium_rect = None
     premium_str_search = f"{premium:,}.00" if premium > 0 else ""
     if premium_str_search:
         hits_prem = fitz_page.search_for(premium_str_search)
         if hits_prem:
             r = hits_prem[0]
-            premium_rect = fitz.Rect(r.x0 - 4, r.y0 - 2, r.x1 + 4, r.y1 + 2)
+            premium_rect = fitz.Rect(r.x0 - 2, r.y0 - 1, r.x1 + 2, r.y1 + 1)
 
-    # ── 计算两行文字的 y 位置：放在表格下方空白区 ──
-    # 找到额外保障行的底部，文字写在它下面
-    table_bottom = None
+    # ── 计算文字写入 y 坐标：放在表格下方空白区 ──
+    hits_total = fitz_page.search_for("投保時每年總保費")
+    total_y    = hits_total[0].y0 if hits_total else fitz_page.rect.height * 0.85
+
     if extra_num_rect:
         table_bottom = extra_num_rect.y1
     elif hits_extra:
         table_bottom = hits_extra[0].y1
     elif hits_base:
         table_bottom = hits_base[-1].y1
-
-    # 找到"投保時每年總保費"的位置作为文字区域上限
-    hits_total = fitz_page.search_for("投保時每年總保費")
-    total_y = hits_total[0].y0 if hits_total else fitz_page.rect.height * 0.85
-
-    if table_bottom is None:
+    else:
         table_bottom = fitz_page.rect.height * 0.42
 
-    # 文字区域：table_bottom 下方，total_y 上方，平均分两行
     available = total_y - table_bottom - 8
-    gap = max(available / 2, 22)
+    gap       = max(available / 2.2, 20)
 
-    y1 = table_bottom + gap * 0.4        # line1 偏上
-    y2 = table_bottom + gap * 0.4 + gap  # line2 在 line1 下方
+    y1 = table_bottom + gap * 0.5
+    y2 = y1 + gap
 
-    # line1 左侧，line2 右侧偏移（错落布局）
-    x1_pos = 36
-    x2_pos = pw * 0.40
+    x1_pos = 36           # line1 左侧
+    x2_pos = pw * 0.40    # line2 右侧偏移
 
-    # ── 画下划线 ──
+    # ── 只画保额数字下划线 ──
     if base_num_rect:
         _draw_underline(fitz_page, base_num_rect, line_width=1.5)
     if extra_num_rect:
         _draw_underline(fitz_page, extra_num_rect, line_width=1.5)
-    if premium_rect:
-        _draw_underline(fitz_page, premium_rect, line_width=1.5)
 
     # ── 写文字 ──
     _write(fitz_page, line1, x1_pos, y1, RED, font_path, fontsize=12)
     _write(fitz_page, line2, x2_pos, y2, RED, font_path, fontsize=12)
 
-    # ── 箭头：line1 → 额外保障行保额数字（从文字右端出发，指向数字上方） ──
-    if extra_num_rect:
-        # 起点：line1 文字右端，y1 行中间
-        ax0 = x1_pos + len(line1) * 12 * 0.52
-        ay0 = y1 - 6
-        # 终点：数字正上方（避开数字本身）
-        ax1 = (extra_num_rect.x0 + extra_num_rect.x1) / 2
-        ay1 = extra_num_rect.y0 + 1   # 指向数字顶部
+    # ── 只画一条箭头：line1 → 基本计划行保额数字左侧 ──
+    # 终点选在数字的左边缘，避免穿越数字
+    if base_num_rect:
+        ax0 = x1_pos + len(line1) * 12 * 0.52   # 文字末尾
+        ay0 = y1 - 6                              # 文字行中间偏上
+
+        # 终点：数字左边缘中间高度（不穿越数字）
+        ax1 = base_num_rect.x0
+        ay1 = (base_num_rect.y0 + base_num_rect.y1) / 2
+
+        # 若起点 x 已经超过终点 x（文字太长），改为从文字正上方出发
+        if ax0 >= ax1 - 10:
+            ax0 = ax1 - 20
+            ay0 = y1 - 4
 
         shape2 = fitz_page.new_shape()
         shape2.draw_line(fitz.Point(ax0, ay0), fitz.Point(ax1, ay1))
@@ -275,31 +273,6 @@ def _annotate_cover(fitz_page, words, policy, font_path):
         shape2.commit()
         _draw_arrowhead(fitz_page, ax0, ay0, ax1, ay1)
 
-    # ── 箭头：line2 → 年保费数字（从文字右端出发，指向数字上方） ──
-    if premium_rect:
-        ax0 = x2_pos + len(line2) * 12 * 0.52
-        ay0 = y2 - 6
-        ax1 = (premium_rect.x0 + premium_rect.x1) / 2
-        ay1 = premium_rect.y0 + 1
-
-        shape3 = fitz_page.new_shape()
-        shape3.draw_line(fitz.Point(ax0, ay0), fitz.Point(ax1, ay1))
-        shape3.finish(color=RED, width=1.2, closePath=False)
-        shape3.commit()
-        _draw_arrowhead(fitz_page, ax0, ay0, ax1, ay1)
-
-    elif base_num_rect:
-        # 找不到保费数字时兜底指向基本计划行
-        ax0 = x2_pos + len(line2) * 12 * 0.52
-        ay0 = y2 - 6
-        ax1 = (base_num_rect.x0 + base_num_rect.x1) / 2
-        ay1 = base_num_rect.y0 + 1
-
-        shape3 = fitz_page.new_shape()
-        shape3.draw_line(fitz.Point(ax0, ay0), fitz.Point(ax1, ay1))
-        shape3.finish(color=RED, width=1.2, closePath=False)
-        shape3.commit()
-        _draw_arrowhead(fitz_page, ax0, ay0, ax1, ay1)
 
 
 # ═══════════════════════════════════════════════════════════════

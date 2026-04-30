@@ -180,22 +180,15 @@ def _is_supplement_with_withdrawal(full_text):
 #   - 非封面：找到保单号文字才遮
 # ═══════════════════════════════════════════════════════════════
 def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.Document:
-    """
-    遮盖策略：
-    - 每一页都无条件遮盖右上角固定区域 (x ≥ pw*0.55, y ≤ 90pt)
-      → 这块位置只有 logo/条形码，不会触及任何正文
-    - 封面页额外：在此基础上，遮到"保障摘要"副标题上方（更严格）
-    - 左下角：被保人姓名/页脚
-    """
     WHITE = (1, 1, 1)
 
-    # 提取保单号（只作文字补充遮盖用，不是主要手段）
-    policy_number = None
+    # 提取被保人姓名
+    insured_name = None
     for page in doc:
         text = page.get_text("text")
-        m = re.search(r"[A-Z]{2}\d{6}-\d{8,}-\d", text)
+        m = re.search(r"被保人姓名[:：]\s*([A-Z][A-Z\s]+?)(?:女士|先生|\s*\n)", text)
         if m:
-            policy_number = m.group(0)
+            insured_name = m.group(1).strip()
             break
 
     for page_num in range(len(doc)):
@@ -205,40 +198,43 @@ def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.D
         text = page.get_text("text")
         redact_rects = []
 
-        # ═══════════════════════════════════════════
-        # ① 每页无条件遮盖右上角（固定坐标）
-        #   x: pw*0.55 ~ pw  （主标题居中，右半最多到 pw*0.50，留 0.05 缓冲）
-        #   y: 0 ~ 90pt       （主标题 y ≈ 100+pt，留安全距离）
-        # ═══════════════════════════════════════════
-        redact_rects.append(fitz.Rect(pw * 0.55, 0, pw, 90))
+        # A. 左上角信息块（所有页无条件遮）
+        redact_rects.append(fitz.Rect(0, 0, pw * 0.40, 125))
 
-        # ═══════════════════════════════════════════
-        # ② 保单号文字：补充遮盖（某些附页有文字保单号）
-        # ═══════════════════════════════════════════
-        if policy_number:
-            for rect in page.search_for(policy_number):
-                redact_rects.append(
-                    fitz.Rect(max(rect.x0 - 5, pw * 0.40), rect.y0 - 2, pw, rect.y1 + 3)
-                )
+        # B. 附加推广页：右上条形码 + 左下页脚
+        is_promo = any(kw in text for kw in [
+            "建議營業人", "保證優惠利率推廣計劃", "Source Code: WEP"
+        ])
+        if is_promo:
+            redact_rects.append(fitz.Rect(pw * 0.55, 0, pw, 80))     # 右上条形码
+            redact_rects.append(fitz.Rect(0, ph - 40, pw, ph))       # 左下页脚
 
-        # ═══════════════════════════════════════════
-        # ③ 左下角：被保人姓名所在行（如存在）
-        # ═══════════════════════════════════════════
-        hits_name = page.search_for("被保人姓名")
-        if hits_name:
-            r = hits_name[-1]  # 取最后一个（底部）
-            if r.y0 >= ph * 0.70:  # 必须在下半页
-                redact_rects.append(fitz.Rect(0, r.y0 - 1, pw * 0.38, ph))
-            else:
-                redact_rects.append(fitz.Rect(0, ph * 0.96, pw * 0.38, ph))
-        else:
-            redact_rects.append(fitz.Rect(0, ph * 0.96, pw * 0.38, ph))
+        # C. 全文搜索被保人姓名变体
+        if insured_name:
+            for kw in [
+                f"被保人姓名：{insured_name}",   f"被保人姓名:{insured_name}",
+                f"申請人姓名：{insured_name}",   f"申請人姓名:{insured_name}",
+                f"申請人：{insured_name}",
+                f"建議營業人：{insured_name}",   f"建議營業人:{insured_name}",
+                f"{insured_name}女士", f"{insured_name}先生",
+            ]:
+                for r in page.search_for(kw):
+                    redact_rects.append(
+                        fitz.Rect(r.x0, r.y0 - 1, min(r.x1 + 200, pw), r.y1 + 1)
+                    )
+
+        # D. 兜底搜保单号前缀
+        for r in page.search_for("AA081713"):
+            redact_rects.append(
+                fitz.Rect(r.x0 - 2, r.y0 - 2, min(r.x1 + 200, pw), r.y1 + 2)
+            )
 
         for rect in redact_rects:
             page.add_redact_annot(rect, fill=WHITE)
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
 
     return doc
+
 
 
 

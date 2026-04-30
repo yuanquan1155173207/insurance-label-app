@@ -181,16 +181,16 @@ def _is_supplement_with_withdrawal(full_text):
 # ═══════════════════════════════════════════════════════════════
 def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.Document:
     """
-    统一遮盖策略（重疾险 & 储蓄险通用）：
-    ① 提取保单号（整个文档搜一次）
-    ② 每页独立处理：
-       - 右上角：保单号文字 + 条形码图片检测（兜底）
-       - 左下角：个人信息关键词 + 图片检测（兜底）
-       - 封面页额外处理（根据险种）
+    简化策略：
+    ① 每一页都无条件遮盖右上角区域（顶部 10% × 右侧 45%）
+       —— 这块区域通常只有 logo/条形码/保单号，不会有正文
+    ② 每一页都无条件遮盖左下角区域（底部 15% × 左侧 45%）
+       —— 这块区域通常是"被保人姓名/申请人签署/页脚"
+    ③ 封面页额外处理（标题上方 logo 右侧区域）
     """
     WHITE = (1, 1, 1)
 
-    # ─── 全局提取保单号 ───
+    # 提取保单号（用于辅助遮盖）
     policy_number = None
     for page in doc:
         text = page.get_text("text")
@@ -207,34 +207,77 @@ def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.D
         redact_rects = []
 
         # ═══════════════════════════════════════════
-        # 1️⃣ 右上角：保单号 + 条形码遮盖
+        # 1️⃣ 右上角：无条件遮盖（顶部 10% × 右侧 45%）
+        #    —— 适用于所有页面的条形码 + 保单号
         # ═══════════════════════════════════════════
-        right_top_covered = False
+        # ★ 关键：无需任何判断，直接遮这块区域
+        redact_rects.append(fitz.Rect(pw * 0.55, 0, pw, ph * 0.10))
 
-        # 策略A：找保单号文字
-        if policy_number:
-            hits = page.search_for(policy_number)
-            if hits:
-                for r in hits:
-                    # 只遮保单号所在行右侧，到页面顶部
-                    redact_rects.append(fitz.Rect(pw * 0.40, 0, pw, r.y1 + 3))
-                right_top_covered = True
-
-        # 策略B：右上角条形码图片检测（兜底）
-        if not right_top_covered:
-            top_right_zone = fitz.Rect(pw * 0.45, 0, pw, ph * 0.12)
-            try:
-                for img in page.get_image_info():
-                    bbox = fitz.Rect(img["bbox"])
-                    # 条形码特征：宽>40，高<50，在右上角区域
-                    if (bbox.intersects(top_right_zone)
-                        and bbox.width > 40
-                        and bbox.height < 60):
-                        redact_rects.append(fitz.Rect(pw * 0.45, 0, pw, ph * 0.12))
-                        right_top_covered = True
+        # ═══════════════════════════════════════════
+        # 2️⃣ 封面页：扩大右上角遮盖范围（因为封面 logo 大）
+        # ═══════════════════════════════════════════
+        if is_savings:
+            is_savings_cover = (
+                "保障摘要" in text and
+                "保障項目" in text
+            )
+            if is_savings_cover:
+                # 找主标题作为下边界
+                title_y = None
+                for tk in ["保障摘要", "儲蓄保險", "建議書摘要"]:
+                    hits = page.search_for(tk)
+                    if hits:
+                        title_y = hits[0].y0
                         break
-            except Exception:
-                pass
+                if title_y and title_y > ph * 0.10:
+                    # 扩大到标题上方整个右侧区域
+                    redact_rects.append(fitz.Rect(pw * 0.40, 0, pw, title_y - 2))
+        else:
+            is_ci_cover = _is_cover_page(text)
+            if is_ci_cover:
+                hits_title = page.search_for("愛唯守危疾保障")
+                if hits_title and hits_title[0].y0 > ph * 0.10:
+                    redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, hits_title[0].y0 - 2))
+
+        # ═══════════════════════════════════════════
+        # 3️⃣ 保单号文字（如果刚好在其他位置也补遮）
+        # ═══════════════════════════════════════════
+        if policy_number:
+            for r in page.search_for(policy_number):
+                redact_rects.append(fitz.Rect(r.x0 - 5, r.y0 - 2, pw, r.y1 + 3))
+
+        # ═══════════════════════════════════════════
+        # 4️⃣ 左下角：关键词定位 + 兜底区域
+        # ═══════════════════════════════════════════
+        left_bottom_covered = False
+
+        sig_keywords = [
+            "被保人姓名", "申請人姓名", "建議被保人", "建議社保局",
+            "中華被保人", "投保人簽署", "申請人簽署",
+            "理財顧問", "保險顧問", "Source Code",
+        ]
+        bottom_threshold = ph * 0.70
+        for kw in sig_keywords:
+            for r in page.search_for(kw):
+                if r.y0 >= bottom_threshold:
+                    redact_rects.append(fitz.Rect(0, r.y0 - 2, pw * 0.55, ph))
+                    left_bottom_covered = True
+                    break
+            if left_bottom_covered:
+                break
+
+        # ★ 左下角兜底：无论如何都遮底部 8%
+        redact_rects.append(fitz.Rect(0, ph * 0.92, pw * 0.55, ph))
+
+        # ═══════════════════════════════════════════
+        # 5️⃣ 应用遮盖
+        # ═══════════════════════════════════════════
+        for rect in redact_rects:
+            page.add_redact_annot(rect, fill=WHITE)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+
+    return doc
+
 
         # ═══════════════════════════════════════════
         # 2️⃣ 封面页专属：遮主标题上方（条形码通常在 logo 右侧）

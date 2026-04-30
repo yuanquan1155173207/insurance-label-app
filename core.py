@@ -114,7 +114,6 @@ def _is_cancer_page(full_text):
     )
 
 def _is_supplement_no_withdrawal(full_text):
-    """储蓄险：无提取版（沒有行使保單選項）"""
     return (
         "補充說明摘要"     in full_text and
         "沒有行使保單選項" in full_text and
@@ -126,7 +125,6 @@ def _is_supplement_no_withdrawal(full_text):
     )
 
 def _is_supplement_with_withdrawal(full_text):
-    """储蓄险：有提取版（退保发还金额那张）"""
     return (
         "補充說明摘要"     in full_text and
         "提取款項"         in full_text and
@@ -370,20 +368,32 @@ def _annotate_cancer(fitz_page, words, policy, font_path):
 # 个人信息遮盖（两险共用）
 # ═══════════════════════════════════════════════════════════════
 def _has_barcode_image(page: fitz.Page) -> bool:
-    """检测页面右上角是否有图片（条形码）"""
+    """检测页面右上角区域是否有图片（条形码）"""
     pw = page.rect.width
     ph = page.rect.height
-    top_right = fitz.Rect(pw * 0.30, 0, pw, ph * 0.18)
+    top_right = fitz.Rect(pw * 0.25, 0, pw, ph * 0.20)
     for img in page.get_image_info():
         bbox = fitz.Rect(img["bbox"])
-        if bbox.intersects(top_right):
+        if bbox.intersects(top_right) and bbox.width > 50 and bbox.height > 5:
             return True
     return False
+
+def _page_has_barcode_keyword(page: fitz.Page) -> bool:
+    """
+    通过页面关键词判断是否是需要遮条形码的页面：
+    储蓄险封面（保障摘要）、储蓄险数据页（補充說明摘要）、重疾险封面
+    """
+    text = page.get_text("text")
+    return (
+        _is_cover_page(text) or
+        "補充說明摘要" in text or
+        "保障摘要"     in text
+    )
 
 def redact_personal_info(doc: fitz.Document) -> fitz.Document:
     WHITE = (1, 1, 1)
 
-    # 预提取保单号
+    # 预提取保单号（用于文字精确定位）
     policy_number = None
     for page in doc:
         text = page.get_text("text")
@@ -400,32 +410,30 @@ def redact_personal_info(doc: fitz.Document) -> fitz.Document:
         redact_rects    = []
         barcode_covered = False
 
-        # 策略1：文字保单号精确定位
+        # ── 策略1：文字保单号精确定位（数据页）──
         if policy_number:
             hits = page.search_for(policy_number)
             if hits:
                 for rect in hits:
                     redact_rects.append(
-                        fitz.Rect(pw * 0.30, 0, pw, rect.y1 + 5)
+                        fitz.Rect(pw * 0.25, 0, pw, rect.y1 + 5)
                     )
                 barcode_covered = True
 
-        # 策略2：图片检测（封面条形码是图片）
+        # ── 策略2：图片检测（封面条形码是嵌入图片）──
         if not barcode_covered and _has_barcode_image(page):
             redact_rects.append(
-                fitz.Rect(pw * 0.30, 0, pw, ph * 0.14)
+                fitz.Rect(pw * 0.25, 0, pw, ph * 0.15)
             )
             barcode_covered = True
 
-        # 策略3：关键词兜底（储蓄险封面/摘要页必遮）
-        if not barcode_covered:
-            text = page.get_text("text")
-            if _is_cover_page(text) or "補充說明摘要" in text:
-                redact_rects.append(
-                    fitz.Rect(pw * 0.30, 0, pw, ph * 0.14)
-                )
+        # ── 策略3：关键词兜底（只要是封面/摘要页，右上角固定遮盖）──
+        if not barcode_covered and _page_has_barcode_keyword(page):
+            redact_rects.append(
+                fitz.Rect(pw * 0.25, 0, pw, ph * 0.15)
+            )
 
-        # 左下角页脚（被保人姓名）
+        # ── 左下角页脚（被保人姓名）──
         hits_name = page.search_for("被保人姓名")
         if hits_name:
             r = hits_name[0]
@@ -820,7 +828,6 @@ def _parse_withdrawal_info(pdf_path, log=print):
                         except Exception:
                             amounts.append(None)
 
-                # (1)+(2) 在 amounts[3]（第4个数字列）
                 if len(amounts) >= 4 and amounts[3] and amounts[3] > 0:
                     year_amounts.append((year, amounts[3]))
 
@@ -838,15 +845,16 @@ def _parse_withdrawal_info(pdf_path, log=print):
 
 
 # ═══════════════════════════════════════════════════════════════
-# 储蓄险：通用行红框 + 气泡标注（无/有提取版共用）
+# 储蓄险：无提取版 - 行红框 + 气泡（横向框整行，不变）
 # ═══════════════════════════════════════════════════════════════
 def _annotate_milestone_rows(fitz_page, milestones, font_path,
                               col_header_text="(3)+(4)+(5)",
                               fallback_col_ratio=0.85):
+    """无提取版：横向框住里程碑年份整行"""
     pw        = fitz_page.rect.width
     text_dict = fitz_page.get_text("dict")
 
-    # ── 找总额列右边界（拼接整行所有span再匹配）──
+    # 找总额列右边界
     total_col_x1 = None
     for block in text_dict["blocks"]:
         if block.get("type") != 0:
@@ -863,7 +871,7 @@ def _annotate_milestone_rows(fitz_page, milestones, font_path,
     if total_col_x1 is None:
         total_col_x1 = pw * fallback_col_ratio
 
-    # ── 找表格最左边界（年份列左边界）──
+    # 找表格最左边界
     table_left = pw
     for block in text_dict["blocks"]:
         if block.get("type") != 0:
@@ -878,7 +886,6 @@ def _annotate_milestone_rows(fitz_page, milestones, font_path,
     if table_left == pw:
         table_left = 10
 
-    # ── 对每个里程碑年份标注 ──
     for ms in milestones:
         target_year = str(ms["year"])
         label       = ms["label"]
@@ -899,18 +906,14 @@ def _annotate_milestone_rows(fitz_page, milestones, font_path,
                 y0, y1    = line_bbox[1], line_bbox[3]
                 row_h     = max(y1 - y0, 8)
 
-                # ── 纯红色边框矩形，无填充 ──
+                # 纯边框矩形，无填充
                 box_rect = fitz.Rect(table_left, y0 - 1.5, total_col_x1, y1 + 1.5)
                 shape = fitz_page.new_shape()
                 shape.draw_rect(box_rect)
-                shape.finish(
-                    color=(r, g, b),
-                    fill=None,
-                    width=1.2
-                )
+                shape.finish(color=(r, g, b), fill=None, width=1.2)
                 shape.commit()
 
-                # ── 气泡标签（紧贴红框右侧）──
+                # 气泡标签
                 bubble_w = min(max(len(label) * 7 + 10, 80), 120)
                 bx0 = total_col_x1 + 3
                 bx1 = bx0 + bubble_w
@@ -921,12 +924,8 @@ def _annotate_milestone_rows(fitz_page, milestones, font_path,
 
                 shape2 = fitz_page.new_shape()
                 shape2.draw_rect(bubble)
-                shape2.finish(
-                    fill=(r, g, b),
-                    fill_opacity=0.88,
-                    color=(r, g, b),
-                    width=0.5
-                )
+                shape2.finish(fill=(r, g, b), fill_opacity=0.88,
+                             color=(r, g, b), width=0.5)
                 shape2.commit()
 
                 kw = dict(fontsize=6.5, color=(1, 1, 1),
@@ -938,13 +937,144 @@ def _annotate_milestone_rows(fitz_page, milestones, font_path,
 
 
 # ═══════════════════════════════════════════════════════════════
-# 储蓄险：有提取版底部红字
+# 储蓄险：有提取版 - 竖向列框（仿照目标图2效果）
 # ═══════════════════════════════════════════════════════════════
-def _annotate_withdrawal_footer(fitz_page, withdrawal_info, font_path):
-    """在页面底部写两行红字说明"""
-    pw = fitz_page.rect.width
-    ph = fitz_page.rect.height
+def _annotate_withdrawal_page(fitz_page, milestones, withdrawal_info, font_path):
+    """
+    有提取版标注：
+    1. 竖向红框圈住 (1)+(2) 提取总额列（从表头到最后一行）
+    2. 竖向红框圈住 (3)+(4)+(5) 退保总额列（从表头到最后一行）
+    3. 对里程碑年份行加横向红框 + 右侧气泡（与无提取版一致）
+    4. 页面底部红字说明
+    """
+    pw        = fitz_page.rect.width
+    ph        = fitz_page.rect.height
+    text_dict = fitz_page.get_text("dict")
 
+    # ── 第一步：定位所有列头，找列边界 ──
+    col_bounds = {}  # key -> (x0, x1, header_y0, header_y1)
+
+    for block in text_dict["blocks"]:
+        if block.get("type") != 0:
+            continue
+        for line in block["lines"]:
+            line_text = "".join(s["text"] for s in line["spans"]).replace(" ", "")
+            line_y0   = line["bbox"][1]
+            line_y1   = line["bbox"][3]
+            line_x0   = min(s["bbox"][0] for s in line["spans"])
+            line_x1   = max(s["bbox"][2] for s in line["spans"])
+
+            if "(1)+(2)" in line_text and "(1)+(2)" not in col_bounds:
+                col_bounds["withdrawal"] = {
+                    "x0": line_x0 - 4, "x1": line_x1 + 4,
+                    "header_y0": line_y0, "header_y1": line_y1
+                }
+            if "(3)+(4)+(5)" in line_text and "(3)+(4)+(5)" not in col_bounds:
+                col_bounds["surrender"] = {
+                    "x0": line_x0 - 4, "x1": line_x1 + 4,
+                    "header_y0": line_y0, "header_y1": line_y1
+                }
+
+    # ── 第二步：找数据区最后一行的 y1 ──
+    last_data_y1 = ph * 0.85
+    for block in text_dict["blocks"]:
+        if block.get("type") != 0:
+            continue
+        for line in block["lines"]:
+            spans = line["spans"]
+            if spans and re.match(r"^\d{1,2}$", spans[0]["text"].strip()):
+                last_data_y1 = max(last_data_y1, line["bbox"][3])
+
+    # ── 第三步：画竖向列框 ──
+    # (1)+(2) 提取列 → 红色框
+    if "withdrawal" in col_bounds:
+        cb = col_bounds["withdrawal"]
+        col_rect = fitz.Rect(cb["x0"], cb["header_y0"] - 2,
+                             cb["x1"], last_data_y1 + 2)
+        shape = fitz_page.new_shape()
+        shape.draw_rect(col_rect)
+        shape.finish(color=RED, fill=None, width=1.5)
+        shape.commit()
+
+    # (3)+(4)+(5) 退保总额列 → 红色框
+    if "surrender" in col_bounds:
+        cb = col_bounds["surrender"]
+        col_rect = fitz.Rect(cb["x0"], cb["header_y0"] - 2,
+                             cb["x1"], last_data_y1 + 2)
+        shape = fitz_page.new_shape()
+        shape.draw_rect(col_rect)
+        shape.finish(color=RED, fill=None, width=1.5)
+        shape.commit()
+
+    # ── 第四步：里程碑行横向红框 + 气泡 ──
+    # 找总额列右边界（用于气泡定位）
+    total_col_x1 = col_bounds["surrender"]["x1"] if "surrender" in col_bounds else pw * 0.85
+
+    # 找表格最左边界
+    table_left = pw
+    for block in text_dict["blocks"]:
+        if block.get("type") != 0:
+            continue
+        for line in block["lines"]:
+            spans = line["spans"]
+            if not spans:
+                continue
+            first_text = spans[0]["text"].strip().replace(",", "")
+            if re.match(r"^\d{1,2}$", first_text):
+                table_left = min(table_left, spans[0]["bbox"][0] - 2)
+    if table_left == pw:
+        table_left = 10
+
+    for ms in milestones:
+        target_year = str(ms["year"])
+        label       = ms["label"]
+        r, g, b     = ms["color"]
+
+        for block in text_dict["blocks"]:
+            if block.get("type") != 0:
+                continue
+            for line in block["lines"]:
+                spans = line["spans"]
+                if not spans:
+                    continue
+                first_text = spans[0]["text"].strip().replace(",", "")
+                if first_text != target_year:
+                    continue
+
+                line_bbox = line["bbox"]
+                y0, y1    = line_bbox[1], line_bbox[3]
+                row_h     = max(y1 - y0, 8)
+
+                # 横向行框（纯边框，无填充）
+                box_rect = fitz.Rect(table_left, y0 - 1.5, total_col_x1, y1 + 1.5)
+                shape = fitz_page.new_shape()
+                shape.draw_rect(box_rect)
+                shape.finish(color=(r, g, b), fill=None, width=1.2)
+                shape.commit()
+
+                # 气泡标签
+                bubble_w = min(max(len(label) * 7 + 10, 80), 120)
+                bx0 = total_col_x1 + 3
+                bx1 = bx0 + bubble_w
+                if bx1 > pw - 5:
+                    bx1 = pw - 5
+                    bx0 = bx1 - bubble_w
+                bubble = fitz.Rect(bx0, y0 - 2, bx1, y0 - 2 + row_h + 4)
+
+                shape2 = fitz_page.new_shape()
+                shape2.draw_rect(bubble)
+                shape2.finish(fill=(r, g, b), fill_opacity=0.88,
+                             color=(r, g, b), width=0.5)
+                shape2.commit()
+
+                kw = dict(fontsize=6.5, color=(1, 1, 1),
+                         align=fitz.TEXT_ALIGN_CENTER)
+                if font_path:
+                    kw["fontfile"] = font_path
+                    kw["fontname"] = "cjk"
+                fitz_page.insert_textbox(bubble, label, **kw)
+
+    # ── 第五步：底部红字说明 ──
     start_year    = withdrawal_info.get("start_year", 0)
     annual_amount = withdrawal_info.get("annual_amount", 0)
     currency      = withdrawal_info.get("currency", "")
@@ -958,19 +1088,7 @@ def _annotate_withdrawal_footer(fitz_page, withdrawal_info, font_path):
         left_text = "開始提取後"
 
     right_text = "提取後保單預計繼續增值"
-
-    # 找最后一行数据的底部 y
-    text_dict   = fitz_page.get_text("dict")
-    last_data_y = ph * 0.85
-    for block in text_dict["blocks"]:
-        if block.get("type") != 0:
-            continue
-        for line in block["lines"]:
-            spans = line["spans"]
-            if spans and re.match(r"^\d+$", spans[0]["text"].strip()):
-                last_data_y = max(last_data_y, line["bbox"][3])
-
-    label_y = last_data_y + 20
+    label_y    = last_data_y1 + 20
 
     kw_red = dict(fontsize=11, color=RED)
     if font_path:
@@ -988,7 +1106,6 @@ def annotate_savings_pdf(input_pdf_path, milestones, font_path=None, log=print):
     if font_path is None:
         font_path = find_chinese_font()
 
-    # 预先解析提取信息（只读一次PDF）
     withdrawal_info = _parse_withdrawal_info(input_pdf_path, log=log)
 
     doc = fitz.open(input_pdf_path)
@@ -1006,7 +1123,7 @@ def annotate_savings_pdf(input_pdf_path, milestones, font_path=None, log=print):
         log(f"  📄 处理页面：no_withdrawal={is_no_wd}  with_withdrawal={is_with_wd}")
 
         if is_no_wd:
-            # 无提取版：总额列是 (1)+(2)+(3)
+            # 无提取版：横向框整行（原有逻辑不变）
             _annotate_milestone_rows(
                 page, milestones, font_path,
                 col_header_text="(1)+(2)+(3)",
@@ -1014,14 +1131,10 @@ def annotate_savings_pdf(input_pdf_path, milestones, font_path=None, log=print):
             )
 
         elif is_with_wd:
-            # 有提取版：总额列是 (3)+(4)+(5)
-            _annotate_milestone_rows(
-                page, milestones, font_path,
-                col_header_text="(3)+(4)+(5)",
-                fallback_col_ratio=0.85
+            # 有提取版：竖向列框 + 横向行框 + 底部红字
+            _annotate_withdrawal_page(
+                page, milestones, withdrawal_info, font_path
             )
-            # 底部红字
-            _annotate_withdrawal_footer(page, withdrawal_info, font_path)
 
     output = io.BytesIO()
     doc.save(output, garbage=4, deflate=True, clean=True)

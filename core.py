@@ -180,14 +180,6 @@ def _is_supplement_with_withdrawal(full_text):
 #   - 非封面：找到保单号文字才遮
 # ═══════════════════════════════════════════════════════════════
 def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.Document:
-    """
-    严格照搬重疾险原版逻辑：
-    1. 提取保单号
-    2. 封面页：找标题定位，遮标题上方右侧（x ≥ 0.35pw）
-    3. 非封面页：搜保单号，找到就遮该行右侧
-    4. 左下角：被保人姓名页脚
-    5. 【新增】最后两页附加推广页：独立处理
-    """
     WHITE = (1, 1, 1)
 
     # 提取保单号
@@ -199,9 +191,7 @@ def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.D
             policy_number = m.group(0)
             break
 
-    total_pages = len(doc)
-
-    for page_num in range(total_pages):
+    for page_num in range(len(doc)):
         page = doc[page_num]
         pw   = page.rect.width
         ph   = page.rect.height
@@ -209,8 +199,7 @@ def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.D
         redact_rects = []
 
         # ═══════════════════════════════════════════
-        # 【新增】最后两页：推广计划附加页
-        # 这些页没有保单号，结构独立
+        # 最后两页：附加推广页（独立处理）
         # ═══════════════════════════════════════════
         is_promo_page = (
             "保證優惠利率推廣計劃" in text or
@@ -219,26 +208,24 @@ def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.D
         )
 
         if is_promo_page:
-            # 右上角条形码（附页条形码位置和主建议书略有不同）
-            redact_rects.append(fitz.Rect(pw * 0.50, 0, pw, ph * 0.10))
-            # 左下页脚："建議營業人: XXX  版本  日期  N/2 頁"
-            redact_rects.append(fitz.Rect(0, ph - 40, pw, ph))
-            # 正文中的"申請人姓名"行（声明页）
+            redact_rects.append(fitz.Rect(pw * 0.50, 0, pw, ph * 0.10))  # 右上条形码
+            redact_rects.append(fitz.Rect(0, ph - 40, pw, ph))            # 左下页脚
             for r in page.search_for("申請人姓名"):
                 redact_rects.append(fitz.Rect(r.x0, r.y0 - 1, pw, r.y1 + 1))
 
             for rect in redact_rects:
                 page.add_redact_annot(rect, fill=WHITE)
-            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-            continue  # 跳过主建议书逻辑
+            # ★★★ 关键修改：图像也要擦 ★★★
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS)
+            continue
 
         # ═══════════════════════════════════════════
-        # 主建议书页（完全照搬重疾险原版）
+        # 主建议书：照搬重疾险逻辑
         # ═══════════════════════════════════════════
         if is_savings:
             is_cover = (
-                "保障摘要"        in text and
-                "保障項目"        in text and
+                "保障摘要" in text and
+                "保障項目" in text and
                 "投保時每年總保費" in text
             )
             title_keyword = "保障摘要"
@@ -247,24 +234,21 @@ def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.D
             title_keyword = "愛唯守危疾保障"
 
         if is_cover:
-            # 封面：找标题定位
             hits_title = page.search_for(title_keyword)
             if hits_title:
                 redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, hits_title[0].y0 - 2))
             else:
                 redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, ph * 0.18))
-            # 封面保单号补充
             if policy_number:
                 for rect in page.search_for(policy_number):
                     redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, rect.y1 + 3))
         elif policy_number:
-            # 非封面页：搜保单号
             hits = page.search_for(policy_number)
             if hits:
                 for rect in hits:
                     redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, rect.y1 + 3))
 
-        # 左下角页脚
+        # 左下角
         hits_name = page.search_for("被保人姓名")
         if hits_name:
             r = hits_name[0]
@@ -274,12 +258,10 @@ def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.D
 
         for rect in redact_rects:
             page.add_redact_annot(rect, fill=WHITE)
-        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+        # ★★★ 关键修改：图像也要擦 ★★★
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS)
 
     return doc
-
-
-
 
 
 # ═══════════════════════════════════════════════════════════════

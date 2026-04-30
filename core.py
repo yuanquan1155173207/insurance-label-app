@@ -11,8 +11,7 @@ def find_chinese_font():
         os.path.join(os.path.dirname(__file__), "font.ttf"),
     ]
     for p in repo_fonts:
-        if os.path.exists(p):
-            return p
+        if os.path.exists(p): return p
     candidates = [
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/PingFang.ttc",
@@ -26,8 +25,7 @@ def find_chinese_font():
         "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
     ]
     for p in candidates:
-        if os.path.exists(p):
-            return p
+        if os.path.exists(p): return p
     return None
 
 @dataclass
@@ -54,10 +52,8 @@ def _write(page, text, x, y, color, font_path, fontsize=10):
     if font_path and os.path.exists(font_path):
         kw["fontfile"] = font_path
         kw["fontname"] = "cjk"
-    try:
-        return page.insert_text((x, y), text, **kw)
-    except Exception:
-        return -1
+    try:    return page.insert_text((x, y), text, **kw)
+    except: return -1
 
 def _write_centered(page, text, y, color, font_path, fontsize=10):
     pw = page.rect.width
@@ -65,16 +61,12 @@ def _write_centered(page, text, y, color, font_path, fontsize=10):
     return _write(page, text, x, y, color, font_path, fontsize)
 
 def _format_wan(amount, currency=""):
-    if not amount or amount <= 0:
-        return "XXX"
+    if not amount or amount <= 0: return "XXX"
     cur = currency or ""
     wan = amount / 10000
-    if wan >= 1 and wan == int(wan):
-        return f"{int(wan)}W{cur}"
-    elif wan >= 1:
-        return f"{wan:.0f}W{cur}"
-    else:
-        return f"{int(amount):,}{cur}"
+    if wan >= 1 and wan == int(wan):   return f"{int(wan)}W{cur}"
+    elif wan >= 1:                      return f"{wan:.0f}W{cur}"
+    else:                               return f"{int(amount):,}{cur}"
 
 def _draw_red_box(fitz_page, rect, line_width=1.5):
     shape = fitz_page.new_shape()
@@ -84,21 +76,18 @@ def _draw_red_box(fitz_page, rect, line_width=1.5):
 
 def _draw_underline(fitz_page, rect, line_width=1.5):
     shape = fitz_page.new_shape()
-    shape.draw_line(
-        fitz.Point(rect.x0, rect.y1),
-        fitz.Point(rect.x1, rect.y1)
-    )
+    shape.draw_line(fitz.Point(rect.x0, rect.y1), fitz.Point(rect.x1, rect.y1))
     shape.finish(color=RED, width=line_width, closePath=False)
     shape.commit()
 
 def _draw_arrowhead(page, x0, y0, x1, y1, size=6):
-    dx = x1 - x0; dy = y1 - y0
+    dx = x1-x0; dy = y1-y0
     length = math.hypot(dx, dy)
     if length == 0: return
     ux = dx/length; uy = dy/length
-    vx = -uy;       vy =  ux
-    p1  = fitz.Point(x1 - size*ux + size*0.5*vx, y1 - size*uy + size*0.5*vy)
-    p2  = fitz.Point(x1 - size*ux - size*0.5*vx, y1 - size*uy - size*0.5*vy)
+    vx = -uy; vy = ux
+    p1  = fitz.Point(x1-size*ux+size*0.5*vx, y1-size*uy+size*0.5*vy)
+    p2  = fitz.Point(x1-size*ux-size*0.5*vx, y1-size*uy-size*0.5*vy)
     tip = fitz.Point(x1, y1)
     shape = page.new_shape()
     shape.draw_polyline([p1, tip, p2])
@@ -114,7 +103,7 @@ def _group_by_rows(words, tolerance=4):
         for row in rows:
             if abs(row["y"] - w["top"]) <= tolerance:
                 row["words"].append(w)
-                row["y"] = (row["y"]*(len(row["words"])-1) + w["top"]) / len(row["words"])
+                row["y"] = (row["y"]*(len(row["words"])-1)+w["top"])/len(row["words"])
                 placed = True; break
         if not placed:
             rows.append({"y": w["top"], "words": [w]})
@@ -185,15 +174,15 @@ def _is_supplement_with_withdrawal(full_text):
 
 
 # ═══════════════════════════════════════════════════════════════
-# ★ 修复1：个人信息遮盖
-# 重疾险封面：搜"愛唯守危疾保障"定位（原版逻辑，不改）
-# 储蓄险封面：搜"盛利"或"補充說明摘要"定位
-# 附件页：右上角图片检测 + 右下角关键词检测
+# 个人信息遮盖
+# ★ 重疾险封面：搜"愛唯守危疾保障"定位，遮其上方
+# ★ 储蓄险封面（保障摘要页）：完全不遮，只遮有保单号的数据页
+# ★ 附件页：右上角图片检测 + 底部签名区域关键词检测
+# ★ 所有页：左下角页脚遮盖
 # ═══════════════════════════════════════════════════════════════
 def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.Document:
     WHITE = (1, 1, 1)
 
-    # 提取保单号
     policy_number = None
     for page in doc:
         text = page.get_text("text")
@@ -207,67 +196,60 @@ def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.D
         pw   = page.rect.width
         ph   = page.rect.height
         text = page.get_text("text")
-
-        redact_rects    = []
-        barcode_covered = False
+        redact_rects = []
 
         if is_savings:
-            # ★ 储蓄险：所有含"補充說明摘要"或"保障摘要"的页面固定遮右上角
-            if "補充說明摘要" in text or (
-                "保障摘要" in text and "基本計劃" in text
-            ):
-                redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, ph * 0.15))
-                barcode_covered = True
-            # 保单号文字兜底
-            if not barcode_covered and policy_number:
+            # ★ 储蓄险封面（保障摘要页）：完全不遮右上角，避免盖住标题
+            # 只有含保单号的页面才遮右上角
+            barcode_covered = False
+            if policy_number:
                 hits = page.search_for(policy_number)
                 if hits:
                     for r in hits:
-                        redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, r.y1 + 3))
+                        # 精确遮保单号所在行右侧
+                        redact_rects.append(fitz.Rect(r.x0 - 5, r.y0 - 2, pw, r.y1 + 2))
                     barcode_covered = True
+
+            # ★ 附件页：检测右上角是否有条形码图片（不是封面页才检测）
+            if not barcode_covered and "保障摘要" not in text:
+                top_right = fitz.Rect(pw * 0.50, 0, pw, ph * 0.15)
+                for img in page.get_image_info():
+                    bbox = fitz.Rect(img["bbox"])
+                    if bbox.intersects(top_right) and bbox.width > 40:
+                        redact_rects.append(fitz.Rect(pw * 0.50, 0, pw, ph * 0.15))
+                        break
+
         else:
             # ★ 重疾险：完全照抄原版逻辑
             is_ci_cover = _is_cover_page(text)
             if is_ci_cover:
                 hits_title = page.search_for("愛唯守危疾保障")
                 if hits_title:
-                    title_y = hits_title[0].y0
-                    redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, title_y - 2))
+                    redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, hits_title[0].y0 - 2))
                 else:
                     redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, ph * 0.18))
                 if policy_number:
                     for r in page.search_for(policy_number):
                         redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, r.y1 + 3))
-                barcode_covered = True
             elif policy_number:
                 hits = page.search_for(policy_number)
                 if hits:
                     for r in hits:
                         redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, r.y1 + 3))
-                    barcode_covered = True
 
-        # ★ 附件页兜底：右上角有图片就遮（两险通用）
-        if not barcode_covered:
-            top_right = fitz.Rect(pw * 0.35, 0, pw, ph * 0.15)
-            for img in page.get_image_info():
-                bbox = fitz.Rect(img["bbox"])
-                if bbox.intersects(top_right) and bbox.width > 30:
-                    redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, ph * 0.15))
-                    barcode_covered = True
-                    break
+        # ★ 附件页底部签名区域：搜索"建議被保人"/"建議社保局"/"申請人姓名"
+        for kw in ["建議被保人", "建議社保局", "申請人姓名", "投保人簽署"]:
+            hits_sig = page.search_for(kw)
+            if hits_sig:
+                sig_y = hits_sig[0].y0
+                # 遮盖签名行到页面底部
+                redact_rects.append(fitz.Rect(0, sig_y - 2, pw, ph))
+                break
 
-        # ★ 附件页右下角个人信息遮盖
-        for kw in ["被保人", "投保人", "申請人"]:
-            for r in page.search_for(kw):
-                if r.y0 > ph * 0.80 and r.x0 > pw * 0.35:
-                    redact_rects.append(fitz.Rect(pw * 0.35, r.y0 - 2, pw, ph))
-                    break
-
-        # 左下角页脚
+        # ★ 所有页：左下角页脚
         hits_name = page.search_for("被保人姓名")
         if hits_name:
-            r = hits_name[0]
-            redact_rects.append(fitz.Rect(0, r.y0 - 1, pw * 0.38, ph))
+            redact_rects.append(fitz.Rect(0, hits_name[0].y0 - 1, pw * 0.38, ph))
         else:
             redact_rects.append(fitz.Rect(0, ph * 0.960, pw * 0.38, ph))
 
@@ -279,27 +261,32 @@ def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.D
 
 
 # ═══════════════════════════════════════════════════════════════
-# ★ 修复2：重疾险封面标识
-# 两行文字紧贴（间距16pt），都从同一x起点，年保费下划线
+# 重疾险封面标注
+# ★ 两行合并成一行，写在总保费行下方空白处
+# ★ 只画基本计划行和额外保障行下划线，不画总保费行
+# ★ 箭头从文字末尾指向保额数字
 # ═══════════════════════════════════════════════════════════════
 def _annotate_cover(fitz_page, words, policy, font_path):
-    base_str  = _format_wan(policy.base_sum_insured, policy.currency)
-    ratio     = policy.extra_ratio or 50
-    ext_years = policy.extra_years or 10
-    line1 = f"保額是{base_str}，首{ext_years}年額外贈送{ratio}%保額"
-
+    base_str    = _format_wan(policy.base_sum_insured, policy.currency)
+    ratio       = policy.extra_ratio or 50
+    ext_years   = policy.extra_years or 10
     premium     = int(policy.annual_premium) if policy.annual_premium else 0
     premium_str = f"{premium:,}" if premium > 0 else "XXXX"
     years_str   = str(int(policy.payment_years)) if policy.payment_years else "XX"
     age_str     = str(int(policy.coverage_age))  if policy.coverage_age  else "100"
+
+    # ★ 两行合并成一行
+    line1 = f"保額是{base_str}，首{ext_years}年額外贈送{ratio}%保額"
     line2 = f"年保費是{premium_str}，交{years_str}年，保到{age_str}歲"
 
     pw = fitz_page.rect.width
+    ph = fitz_page.rect.height
 
     base_num_rect  = None
     base_row_line  = None
     extra_row_line = None
 
+    # 基本计划行下划线
     base_num_str = f"{int(policy.base_sum_insured):,}" if policy.base_sum_insured else "1,000,000"
     hits_base_num = fitz_page.search_for(base_num_str)
     if hits_base_num:
@@ -307,58 +294,53 @@ def _annotate_cover(fitz_page, words, policy, font_path):
         base_num_rect = fitz.Rect(r.x0-2, r.y0-1, r.x1+2, r.y1+1)
         base_row_line = fitz.Rect(36, r.y0-1, pw-36, r.y1+1)
 
+    # 额外保障行下划线
     extra_num_str = f"{int(policy.extra_sum_insured):,}" if policy.extra_sum_insured else "500,000"
     hits_extra_num = fitz_page.search_for(extra_num_str)
     if hits_extra_num:
         r = hits_extra_num[0]
         extra_row_line = fitz.Rect(36, r.y0-1, pw-36, r.y1+1)
 
-    # ★ 年保费行下划线（投保時每年總保費 那一行的数字）
+    # ★ 找"投保時每年總保費"行作为写字区域上边界
     hits_total = fitz_page.search_for("投保時每年總保費")
-    total_y    = hits_total[0].y0 if hits_total else fitz_page.rect.height * 0.85
-    prem_row_line = None
+    # ★ 找"投保時綜保費及保費徵費"作为写字区域下边界
+    hits_levy = fitz_page.search_for("投保時綜保費及保費徵費")
+    if not hits_levy:
+        hits_levy = fitz_page.search_for("保費徵費")
+
     if hits_total:
-        # 找"投保時每年總保費"同行的数字
-        ty0 = hits_total[0].y0
-        ty1 = hits_total[0].y1
-        prem_row_line = fitz.Rect(hits_total[0].x0, ty0-1, pw-10, ty1+1)
-
-    hits_extra_kw = fitz_page.search_for("額外保障")
-    hits_base_kw  = fitz_page.search_for("愛唯守危疾保障")
-    if extra_row_line:
-        table_bottom = extra_row_line.y1
-    elif hits_extra_kw:
-        table_bottom = hits_extra_kw[0].y1
-    elif hits_base_kw:
-        table_bottom = hits_base_kw[-1].y1
+        write_y_top = hits_total[0].y1 + 20   # 总保费行下方20pt
+    elif extra_row_line:
+        write_y_top = extra_row_line.y1 + 20
     else:
-        table_bottom = fitz_page.rect.height * 0.42
+        write_y_top = ph * 0.72
 
-    available = total_y - table_bottom - 8
-    gap       = max(available / 2.2, 20)
+    if hits_levy:
+        write_y_bottom = hits_levy[0].y0 - 10
+    else:
+        write_y_bottom = ph * 0.92
 
-    # ★ 两行紧贴：y1 在表格下方，y2 = y1 + 16（字体高度）
-    y1     = table_bottom + gap * 0.4
-    y2     = y1 + 16          # ★ 紧贴，不再是 y1 + gap
-    x_pos  = 36               # ★ 两行同一起点
+    # ★ 写字y坐标：在空白区域中间偏上
+    text_y = write_y_top + (write_y_bottom - write_y_top) * 0.35
 
+    # ★ 只画基本计划行和额外保障行下划线，不画总保费行
     if base_row_line:
         _draw_underline(fitz_page, base_row_line, line_width=1.2)
     if extra_row_line:
         _draw_underline(fitz_page, extra_row_line, line_width=1.2)
-    if prem_row_line:
-        _draw_underline(fitz_page, prem_row_line, line_width=1.2)
 
-    _write(fitz_page, line1, x_pos, y1, RED, font_path, fontsize=12)
-    _write(fitz_page, line2, x_pos, y2, RED, font_path, fontsize=12)  # ★ 同x_pos
+    # ★ 两行写在空白处，x从36开始，间距18pt
+    _write(fitz_page, line1, 36, text_y,      RED, font_path, fontsize=12)
+    _write(fitz_page, line2, 36, text_y + 18, RED, font_path, fontsize=12)
 
+    # 箭头从line1末尾指向保额数字
     if base_num_rect:
-        ax0 = x_pos + len(line1) * 12 * 0.52
-        ay0 = y1 - 6
+        ax0 = 36 + len(line1) * 12 * 0.52
+        ay0 = text_y - 4
         ax1 = base_num_rect.x0
         ay1 = (base_num_rect.y0 + base_num_rect.y1) / 2
         if ax0 >= ax1 - 10:
-            ax0 = ax1 - 20; ay0 = y1 - 4
+            ax0 = ax1 - 20; ay0 = text_y - 4
         shape2 = fitz_page.new_shape()
         shape2.draw_line(fitz.Point(ax0, ay0), fitz.Point(ax1, ay1))
         shape2.finish(color=RED, width=1.2, closePath=False)
@@ -367,8 +349,8 @@ def _annotate_cover(fitz_page, words, policy, font_path):
 
 
 # ═══════════════════════════════════════════════════════════════
-# ★ 修复3：重疾险说明摘要
-# 两行红字写在"基本計劃 - 說明摘要"右侧，不遮原文
+# 重疾险说明摘要标注
+# ★ 两行红字写在页面右侧大空白区（x从55%开始），不碰左侧原文
 # ═══════════════════════════════════════════════════════════════
 def _annotate_summary(fitz_page, words, policy, font_path):
     w_col12 = next((w for w in words if w["text"] == "(1)+(2)"),  None)
@@ -379,35 +361,42 @@ def _annotate_summary(fitz_page, words, policy, font_path):
     premium_str = f"{int(policy.annual_premium):,}" if policy.annual_premium else "24,170"
     years_str   = str(int(policy.payment_years))    if policy.payment_years  else "10"
 
-    # ★ 找"基本計劃"行的位置，把两行红字写在其后面（右侧）
-    hits_basic = fitz_page.search_for("基本計劃")
     pw = fitz_page.rect.width
-    if hits_basic:
-        # 写在"基本計劃"文字的右侧同行
-        bx  = hits_basic[0].x1 + 8
-        by1 = hits_basic[0].y1       # ★ 同行第一行
-        by2 = by1 + 13               # ★ 紧贴第二行
-    else:
-        bx  = pw * 0.35
-        by1 = 75
-        by2 = 88
 
-    _write(fitz_page, f"每年交{premium_str}",     bx, by1, RED, font_path, fontsize=9)
-    _write(fitz_page, f"交{years_str}年不用再交", bx, by2, RED, font_path, fontsize=9)
+    # ★ 找"保單貨幣"行的y坐标，把两行红字写在其右侧空白处
+    # 这样和原文同高但在右侧，完全不遮原文
+    hits_currency = fitz_page.search_for("保單貨幣")
+    hits_basic    = fitz_page.search_for("基本計劃")
 
+    if hits_currency:
+        # "保單貨幣"在第二行，把line2写在其右侧
+        cy = hits_currency[0].y1
+        # "基本計劃"在第一行，把line1写在其右侧
+        if hits_basic:
+            by = hits_basic[0].y1
+        else:
+            by = cy - 13
+        # ★ x从页面55%开始，确保不碰左侧"基本計劃"和"保單貨幣"原文
+        label_x = pw * 0.55
+        _write(fitz_page, f"每年交{premium_str}",     label_x, by, RED, font_path, fontsize=9)
+        _write(fitz_page, f"交{years_str}年不用再交", label_x, cy, RED, font_path, fontsize=9)
+    elif hits_basic:
+        label_x = pw * 0.55
+        by = hits_basic[0].y1
+        _write(fitz_page, f"每年交{premium_str}，交{years_str}年不用再交",
+               label_x, by, RED, font_path, fontsize=9)
+
+    # 列框标注（不变）
     if w_col12 and w_100:
         _write(fitz_page, "預計的退保價值",
-               w_col12["x0"] - 10, w_100["bottom"] + 12,
-               ORANGE, font_path, fontsize=9)
+               w_col12["x0"]-10, w_100["bottom"]+12, ORANGE, font_path, fontsize=9)
     if w_col34 and w_100:
         _write(fitz_page, "預計的理賠金額",
-               w_col34["x0"] - 10, w_100["bottom"] + 12,
-               GREEN, font_path, fontsize=9)
+               w_col34["x0"]-10, w_100["bottom"]+12, GREEN,  font_path, fontsize=9)
 
     hits_12  = fitz_page.search_for("(1)+(2)")
     hits_34  = fitz_page.search_for("(3)+(4)")
     hits_100 = fitz_page.search_for("100歲")
-
     if hits_12 and hits_34 and hits_100:
         r12  = hits_12[0]; r34 = hits_34[0]; r100 = hits_100[-1]
         hits_header  = fitz_page.search_for("退保發還金額")
@@ -424,20 +413,20 @@ def _annotate_summary(fitz_page, words, policy, font_path):
 def _annotate_multi(fitz_page, words, font_path):
     content_words = [w for w in words if w["bottom"] < 760]
     last_y = (max(w["bottom"] for w in content_words) + 24) if content_words else 560
-    _write_centered(fitz_page, "計劃本來自帶多次賠付，",         last_y,      RED, font_path, fontsize=12)
-    _write_centered(fitz_page, "意思是萬一理賠過重疾了，不用再交費繼續有保障，", last_y+18, RED, font_path, fontsize=12)
-    _write_centered(fitz_page, "最多能賠9次",                    last_y+36,   RED, font_path, fontsize=12)
+    _write_centered(fitz_page, "計劃本來自帶多次賠付，",                          last_y,    RED, font_path, fontsize=12)
+    _write_centered(fitz_page, "意思是萬一理賠過重疾了，不用再交費繼續有保障，",  last_y+18, RED, font_path, fontsize=12)
+    _write_centered(fitz_page, "最多能賠9次",                                      last_y+36, RED, font_path, fontsize=12)
 
 def _annotate_cancer(fitz_page, words, policy, font_path):
     content_words = [w for w in words if w["bottom"] < 760]
     last_y = (max(w["bottom"] for w in content_words) + 24) if content_words else 620
-    _write_centered(fitz_page, "還有針對大家最擔心的癌症，",                          last_y,    RED, font_path, fontsize=12)
-    _write_centered(fitz_page, "如果患癌症了，理賠完重疾後",                          last_y+18, RED, font_path, fontsize=12)
-    _write_centered(fitz_page, "如果一年未愈，能每月賠5%的保額，直到康復或最長100個月", last_y+46, RED, font_path, fontsize=12)
+    _write_centered(fitz_page, "還有針對大家最擔心的癌症，",                              last_y,    RED, font_path, fontsize=12)
+    _write_centered(fitz_page, "如果患癌症了，理賠完重疾後",                              last_y+18, RED, font_path, fontsize=12)
+    _write_centered(fitz_page, "如果一年未愈，能每月賠5%的保額，直到康復或最長100個月",   last_y+46, RED, font_path, fontsize=12)
 
 
 # ═══════════════════════════════════════════════════════════════
-# 字段提取（不改动）
+# 字段提取
 # ═══════════════════════════════════════════════════════════════
 def extract_text(pdf_path):
     pages = []
@@ -450,7 +439,7 @@ def extract_text(pdf_path):
 def extract_fields(text):
     patterns = {
         "annual_premium":  [r"投保時每年總保費[：:]\s*([\d,]+\.?\d*)", r"每年總保費[：:]\s*([\d,]+)"],
-        "payment_years":   [r"保費繳付年期\s*(\d{1,2})\s*年", r"保費繳付年期[\s\S]{1,20}?(\d{1,2})\s*年"],
+        "payment_years":   [r"保費繳付年期\s*(\d{1,2})\s*年"],
         "currency":        [r"保單貨幣[：:]\s*(\S+)"],
         "insured_name":    [r"被保人姓名[：:]\s*(.+?)(?:\n|先生|女士)"],
         "insured_age":     [r"年齡[：:]\s*(\d+)"],
@@ -476,13 +465,13 @@ def extract_fields_from_cover_page(pdf_path, debug=True):
             words = page.extract_words()
             m = re.search(r"投保時每年總保費[：:]?\s*([\d,]+\.?\d*)", full_text)
             if m:
-                try: result["annual_premium"] = float(m.group(1).replace(",", ""))
+                try: result["annual_premium"] = float(m.group(1).replace(",",""))
                 except: pass
             m = re.search(r"保單貨幣[：:]?\s*(港幣|美金|人民幣|人民币)", full_text)
             if m: result["currency"] = m.group(1)
             rows = _group_by_rows(words, tolerance=4)
             def _num(s):
-                try: return float(s.replace(",", ""))
+                try: return float(s.replace(",",""))
                 except: return None
             base_row = None
             for y, row_ws in rows:
@@ -552,7 +541,7 @@ def extract_fields_from_summary_page(pdf_path):
             if "保費繳付年期" not in full_text and "繳費年期" not in full_text: continue
             m = re.search(r"投保時每年總保費[：:]\s*([\d,]+\.?\d*)", full_text)
             if m:
-                try: result["annual_premium"] = float(m.group(1).replace(",", ""))
+                try: result["annual_premium"] = float(m.group(1).replace(",",""))
                 except: pass
             for i, w in enumerate(words):
                 if "繳付" in w["text"] or "年期" in w["text"]:
@@ -568,18 +557,18 @@ def extract_fields_from_summary_page(pdf_path):
                     yr = int(m2.group(1))
                     if 1 <= yr <= 30: result["payment_years"] = yr
             for w in words:
-                if w["text"] in ["美金", "港幣", "人民幣"]: result["currency"] = w["text"]; break
+                if w["text"] in ["美金","港幣","人民幣"]: result["currency"] = w["text"]; break
             if "payment_years" in result: break
     return result
 
 
 # ═══════════════════════════════════════════════════════════════
-# 重疾险主入口（调用 redact_personal_info 时传 is_savings=False）
+# 重疾险主入口
 # ═══════════════════════════════════════════════════════════════
 def annotate_critical_illness_pdf(input_pdf_path, policy, font_path=None):
     if font_path is None: font_path = find_chinese_font()
     fitz_doc = fitz.open(input_pdf_path)
-    fitz_doc = redact_personal_info(fitz_doc, is_savings=False)  # ★ 重疾险
+    fitz_doc = redact_personal_info(fitz_doc, is_savings=False)
     with pdfplumber.open(input_pdf_path) as pl_doc:
         for page_idx in range(len(fitz_doc)):
             fitz_page = fitz_doc[page_idx]
@@ -604,7 +593,7 @@ def annotate_critical_illness_pdf(input_pdf_path, policy, font_path=None):
 
 
 # ═══════════════════════════════════════════════════════════════
-# 储蓄险：数据提取
+# 储蓄险数据提取
 # ═══════════════════════════════════════════════════════════════
 def extract_supplement_table(pdf_path, log=print):
     all_rows = []
@@ -614,7 +603,7 @@ def extract_supplement_table(pdf_path, log=print):
             if not text or not _is_supplement_no_withdrawal(text): continue
             lines = text.split("\n")
             for line in lines:
-                line = line.strip().replace(",", "")
+                line = line.strip().replace(",","")
                 tokens = line.split()
                 if not tokens or not tokens[0].isdigit(): continue
                 year = int(tokens[0])
@@ -666,8 +655,7 @@ def _parse_withdrawal_info(pdf_path, log=print):
                 if not tokens or not tokens[0].isdigit(): continue
                 year = int(tokens[0])
                 if year < 1 or year > 99: continue
-                clean = [t.replace(",","") for t in tokens]
-                amounts = []
+                clean = [t.replace(",","") for t in tokens]; amounts = []
                 for t in clean[1:]:
                     if t == "-": amounts.append(0)
                     else:
@@ -685,7 +673,7 @@ def _parse_withdrawal_info(pdf_path, log=print):
 
 
 # ═══════════════════════════════════════════════════════════════
-# 储蓄险：无提取版标注（横向行框 + 气泡，不改动）
+# 储蓄险：无提取版标注
 # ═══════════════════════════════════════════════════════════════
 def _annotate_milestone_rows(fitz_page, milestones, font_path,
                               col_header_text="(1)+(2)+(3)", fallback_col_ratio=0.52):
@@ -695,8 +683,8 @@ def _annotate_milestone_rows(fitz_page, milestones, font_path,
     for block in text_dict["blocks"]:
         if block.get("type") != 0: continue
         for line in block["lines"]:
-            line_text = "".join(s["text"] for s in line["spans"]).replace(" ", "")
-            if col_header_text.replace(" ", "") in line_text:
+            line_text = "".join(s["text"] for s in line["spans"]).replace(" ","")
+            if col_header_text.replace(" ","") in line_text:
                 total_col_x1 = max(s["bbox"][2] for s in line["spans"]) + 4; break
         if total_col_x1: break
     if total_col_x1 is None: total_col_x1 = pw * fallback_col_ratio
@@ -720,8 +708,8 @@ def _annotate_milestone_rows(fitz_page, milestones, font_path,
                 shape.draw_rect(fitz.Rect(table_left, y0-1.5, total_col_x1, y1+1.5))
                 shape.finish(color=(r,g,b), fill=None, width=1.2); shape.commit()
                 bubble_w = min(max(len(label)*7+10, 80), 120)
-                bx0 = total_col_x1 + 3; bx1 = bx0 + bubble_w
-                if bx1 > pw-5: bx1 = pw-5; bx0 = bx1 - bubble_w
+                bx0 = total_col_x1+3; bx1 = bx0+bubble_w
+                if bx1 > pw-5: bx1 = pw-5; bx0 = bx1-bubble_w
                 bubble = fitz.Rect(bx0, y0-2, bx1, y0-2+row_h+4)
                 shape2 = fitz_page.new_shape()
                 shape2.draw_rect(bubble)
@@ -732,53 +720,43 @@ def _annotate_milestone_rows(fitz_page, milestones, font_path,
 
 
 # ═══════════════════════════════════════════════════════════════
-# ★ 修复4：储蓄险有提取版
-# 只画两个竖框，完全没有气泡，完全没有横向行框
+# 储蓄险：有提取版标注（只画两个竖框 + 底部说明，无气泡无行框）
 # ═══════════════════════════════════════════════════════════════
 def _annotate_withdrawal_page(fitz_page, withdrawal_info, font_path):
-    # ★ 注意：参数里没有 milestones，彻底不画气泡
     pw = fitz_page.rect.width
     ph = fitz_page.rect.height
     text_dict = fitz_page.get_text("dict")
-
     col1_x0 = None; col12_x1 = None
     col345_x0 = None; col345_x1 = None
     col_header_y = None
-
     for block in text_dict["blocks"]:
         if block.get("type") != 0: continue
         for line in block["lines"]:
-            line_text = "".join(s["text"] for s in line["spans"]).replace(" ", "")
-            # (1) 列左边界
+            line_text = "".join(s["text"] for s in line["spans"]).replace(" ","")
             if "(1)" in line_text and "(1)+(2)" not in line_text and col1_x0 is None:
                 for span in line["spans"]:
                     if span["text"].replace(" ","") == "(1)":
-                        col1_x0 = span["bbox"][0] - 3
+                        col1_x0 = span["bbox"][0]-3
                         if col_header_y is None: col_header_y = line["bbox"][1]
                         break
-            # (1)+(2) 列右边界
             if "(1)+(2)" in line_text and col12_x1 is None:
                 for span in line["spans"]:
                     if "(1)+(2)" in span["text"].replace(" ",""):
-                        col12_x1 = span["bbox"][2] + 3
+                        col12_x1 = span["bbox"][2]+3
                         if col_header_y is None: col_header_y = line["bbox"][1]
                         break
-            # (3)+(4)+(5) 列
             if "(3)+(4)+(5)" in line_text and col345_x0 is None:
                 for span in line["spans"]:
                     if "(3)+(4)+(5)" in span["text"].replace(" ",""):
-                        col345_x0 = span["bbox"][0] - 3
-                        col345_x1 = span["bbox"][2] + 3
+                        col345_x0 = span["bbox"][0]-3
+                        col345_x1 = span["bbox"][2]+3
                         if col_header_y is None: col_header_y = line["bbox"][1]
                         break
-
     if col1_x0      is None: col1_x0      = pw * 0.22
     if col12_x1     is None: col12_x1     = pw * 0.42
     if col345_x0    is None: col345_x0    = pw * 0.72
     if col345_x1    is None: col345_x1    = pw * 0.92
     if col_header_y is None: col_header_y = ph * 0.15
-
-    # 找数据最后一行
     last_data_y1 = ph * 0.85
     for block in text_dict["blocks"]:
         if block.get("type") != 0: continue
@@ -786,40 +764,33 @@ def _annotate_withdrawal_page(fitz_page, withdrawal_info, font_path):
             spans = line["spans"]
             if spans and re.match(r"^\d{1,2}$", spans[0]["text"].strip()):
                 last_data_y1 = max(last_data_y1, line["bbox"][3])
-
-    # ★ 竖框1：(1)(2)(1)+(2) 三列
     shape = fitz_page.new_shape()
     shape.draw_rect(fitz.Rect(col1_x0, col_header_y-2, col12_x1, last_data_y1+2))
     shape.finish(color=RED, fill=None, width=1.5); shape.commit()
-
-    # ★ 竖框2：(3)+(4)+(5) 列
     shape = fitz_page.new_shape()
     shape.draw_rect(fitz.Rect(col345_x0, col_header_y-2, col345_x1, last_data_y1+2))
     shape.finish(color=RED, fill=None, width=1.5); shape.commit()
-
-    # ★ 底部红字（无气泡无行框）
     start_year    = withdrawal_info.get("start_year", 0)
     annual_amount = withdrawal_info.get("annual_amount", 0)
     currency      = withdrawal_info.get("currency", "")
-    cur_str = {"美金": "USD", "港幣": "HKD", "人民幣": "RMB"}.get(currency, currency)
+    cur_str = {"美金":"USD","港幣":"HKD","人民幣":"RMB"}.get(currency, currency)
     left_text  = f"第{start_year}年開始，每年提取{int(annual_amount):,}{cur_str}" if start_year > 0 and annual_amount > 0 else "開始提取後"
     right_text = "提取後保單預計繼續增值"
     label_y    = last_data_y1 + 20
     kw_red = dict(fontsize=11, color=RED)
     if font_path: kw_red["fontfile"] = font_path; kw_red["fontname"] = "cjk"
     fitz_page.insert_text((20, label_y), left_text, **kw_red)
-    fitz_page.insert_text((pw * 0.55, label_y), right_text, **kw_red)
+    fitz_page.insert_text((pw*0.55, label_y), right_text, **kw_red)
 
 
 # ═══════════════════════════════════════════════════════════════
-# 储蓄险主入口（调用 redact_personal_info 时传 is_savings=True）
+# 储蓄险主入口
 # ═══════════════════════════════════════════════════════════════
 def annotate_savings_pdf(input_pdf_path, milestones, font_path=None, log=print):
     if font_path is None: font_path = find_chinese_font()
     withdrawal_info = _parse_withdrawal_info(input_pdf_path, log=log)
     doc = fitz.open(input_pdf_path)
-    doc = redact_personal_info(doc, is_savings=True)  # ★ 储蓄险专用遮盖逻辑
-
+    doc = redact_personal_info(doc, is_savings=True)
     for page in doc:
         full_text = page.get_text("text")
         is_no_wd   = _is_supplement_no_withdrawal(full_text)
@@ -827,13 +798,10 @@ def annotate_savings_pdf(input_pdf_path, milestones, font_path=None, log=print):
         if not (is_no_wd or is_with_wd): continue
         log(f"  📄 处理页面：no_withdrawal={is_no_wd}  with_withdrawal={is_with_wd}")
         if is_no_wd:
-            # 无提取版：横向行框 + 气泡
             _annotate_milestone_rows(page, milestones, font_path,
                                      col_header_text="(1)+(2)+(3)", fallback_col_ratio=0.52)
         elif is_with_wd:
-            # ★ 有提取版：只传 withdrawal_info，完全没有 milestones 参数
             _annotate_withdrawal_page(page, withdrawal_info, font_path)
-
     output = io.BytesIO()
     doc.save(output, garbage=4, deflate=True, clean=True)
     doc.close()

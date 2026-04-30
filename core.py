@@ -174,15 +174,12 @@ def _is_supplement_with_withdrawal(full_text):
 
 
 # ═══════════════════════════════════════════════════════════════
-# 个人信息遮盖（简化坐标策略：每页无条件遮右上角 + 左下角）
+# 个人信息遮盖
+# ★ 重疾险 & 储蓄险采用完全相同的策略：
+#   - 封面：找副标题"保障摘要"定位，遮其上方右侧
+#   - 非封面：找到保单号文字才遮
 # ═══════════════════════════════════════════════════════════════
 def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.Document:
-    """
-    统一遮盖策略：
-    - 右上角：固定坐标遮盖（logo 右侧条形码区域）
-    - 左下角：关键词 + 固定兜底
-    - 封面页：保单号文字补充遮盖
-    """
     WHITE = (1, 1, 1)
 
     # 提取保单号
@@ -201,49 +198,57 @@ def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.D
         text = page.get_text("text")
         redact_rects = []
 
-        # ═══════════════════════════════════════════
-        # 1️⃣ 右上角：固定遮盖（logo 右侧 + 顶部区域）
-        #    关键：y 只遮到 ph*0.08（约 67pt），不会碰到居中的主标题
-        #    x 从 pw*0.50 开始（条形码一定在页面右半）
-        # ═══════════════════════════════════════════
-        redact_rects.append(fitz.Rect(pw * 0.50, 0, pw, ph * 0.08))
+        if is_savings:
+            # ── 储蓄险：完全照搬重疾险逻辑 ──
+            is_savings_cover = (
+                "保障摘要" in text and
+                "保障項目" in text and
+                "投保時每年總保費" in text
+            )
+            if is_savings_cover:
+                # 封面：找副标题"保障摘要"定位
+                hits_title = page.search_for("保障摘要")
+                if hits_title:
+                    redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, hits_title[0].y0 - 2))
+                else:
+                    redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, ph * 0.18))
+                # 保单号补充遮盖
+                if policy_number:
+                    for rect in page.search_for(policy_number):
+                        redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, rect.y1 + 3))
+            elif policy_number:
+                # 非封面页：只在找到保单号时才遮
+                hits = page.search_for(policy_number)
+                if hits:
+                    for rect in hits:
+                        redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, rect.y1 + 3))
 
-        # ═══════════════════════════════════════════
-        # 2️⃣ 保单号文字：独立搜索并遮盖（不依赖封面判断）
-        # ═══════════════════════════════════════════
-        if policy_number:
-            for r in page.search_for(policy_number):
-                # 只遮保单号所在行的右半部分，避免误伤左侧正文
-                x_start = max(r.x0 - 5, pw * 0.40)
-                redact_rects.append(fitz.Rect(x_start, r.y0 - 2, pw, r.y1 + 3))
+        else:
+            # ── 重疾险：原版逻辑 ──
+            is_ci_cover = _is_cover_page(text)
+            if is_ci_cover:
+                hits_title = page.search_for("愛唯守危疾保障")
+                if hits_title:
+                    redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, hits_title[0].y0 - 2))
+                else:
+                    redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, ph * 0.18))
+                if policy_number:
+                    for rect in page.search_for(policy_number):
+                        redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, rect.y1 + 3))
+            elif policy_number:
+                hits = page.search_for(policy_number)
+                if hits:
+                    for rect in hits:
+                        redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, rect.y1 + 3))
 
-        # ═══════════════════════════════════════════
-        # 3️⃣ 左下角签名关键词：精确遮盖
-        # ═══════════════════════════════════════════
-        sig_keywords = [
-            "被保人姓名", "申請人姓名", "建議被保人", "建議社保局",
-            "中華被保人", "投保人簽署", "申請人簽署",
-            "理財顧問", "保險顧問",
-        ]
-        bottom_threshold = ph * 0.70
-        covered = False
-        for kw in sig_keywords:
-            for r in page.search_for(kw):
-                if r.y0 >= bottom_threshold:
-                    redact_rects.append(fitz.Rect(0, r.y0 - 2, pw * 0.55, ph))
-                    covered = True
-                    break
-            if covered:
-                break
+        # ── 左下角页脚（被保人姓名）── 两种险种都保留
+        hits_name = page.search_for("被保人姓名")
+        if hits_name:
+            r = hits_name[0]
+            redact_rects.append(fitz.Rect(0, r.y0 - 1, pw * 0.38, ph))
+        else:
+            redact_rects.append(fitz.Rect(0, ph * 0.960, pw * 0.38, ph))
 
-        # ═══════════════════════════════════════════
-        # 4️⃣ 左下角兜底（底部 4%，避免挡到正文最后一行）
-        # ═══════════════════════════════════════════
-        redact_rects.append(fitz.Rect(0, ph * 0.96, pw * 0.55, ph))
-
-        # ═══════════════════════════════════════════
-        # 5️⃣ 应用遮盖
-        # ═══════════════════════════════════════════
         for rect in redact_rects:
             page.add_redact_annot(rect, fill=WHITE)
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
@@ -252,7 +257,7 @@ def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.D
 
 
 # ═══════════════════════════════════════════════════════════════
-# 重疾险 1. 保障摘要页（首页）标识 —— 两行合并为一行
+# 重疾险 1. 保障摘要页（首页）标识
 # ═══════════════════════════════════════════════════════════════
 def _annotate_cover(fitz_page, words, policy, font_path):
     hits_extra = fitz_page.search_for("額外保障")
@@ -267,12 +272,10 @@ def _annotate_cover(fitz_page, words, policy, font_path):
     years_str   = str(int(policy.payment_years)) if policy.payment_years else "XX"
     age_str     = str(int(policy.coverage_age))  if policy.coverage_age  else "100"
 
-    # ★ 合并成一行
     line_all = f"保額是{base_str}，首{ext_years}年額外贈送{ratio}%保額；年保費是{premium_str}，交{years_str}年，保到{age_str}歲"
 
     pw = fitz_page.rect.width
 
-    # ── 基本计划行数字定位 ──
     base_num_rect  = None
     extra_row_line = None
     base_row_line  = None
@@ -290,7 +293,6 @@ def _annotate_cover(fitz_page, words, policy, font_path):
         r = hits_extra_num[0]
         extra_row_line = fitz.Rect(36, r.y0 - 1, pw - 36, r.y1 + 1)
 
-    # ── 计算写字 y 坐标 ──
     hits_total = fitz_page.search_for("投保時每年總保費")
     total_y    = hits_total[0].y0 if hits_total else fitz_page.rect.height * 0.85
 
@@ -303,21 +305,17 @@ def _annotate_cover(fitz_page, words, policy, font_path):
     else:
         table_bottom = fitz_page.rect.height * 0.42
 
-    # ★ 在表格底部和总保费之间的空白中间写一行
     text_y = table_bottom + (total_y - table_bottom) * 0.45
 
     x_pos = 36
 
-    # ── 下划线 ──
     if base_row_line:
         _draw_underline(fitz_page, base_row_line, line_width=1.2)
     if extra_row_line:
         _draw_underline(fitz_page, extra_row_line, line_width=1.2)
 
-    # ── 写一行红字 ──
     _write(fitz_page, line_all, x_pos, text_y, RED, font_path, fontsize=12)
 
-    # ── 箭头：从"保額是XXW美金"末尾指向保额数字 ──
     if base_num_rect:
         prefix = f"保額是{base_str}"
         ax0 = x_pos + len(prefix) * 12 * 0.52
@@ -338,7 +336,7 @@ def _annotate_cover(fitz_page, words, policy, font_path):
 
 
 # ═══════════════════════════════════════════════════════════════
-# 重疾险 2. 說明摘要页标识 —— 一行红字写在右侧空白，不挡原文
+# 重疾险 2. 說明摘要页标识
 # ═══════════════════════════════════════════════════════════════
 def _annotate_summary(fitz_page, words, policy, font_path):
     w_col12 = next((w for w in words if w["text"] == "(1)+(2)"),  None)
@@ -351,15 +349,12 @@ def _annotate_summary(fitz_page, words, policy, font_path):
 
     pw = fitz_page.rect.width
 
-    # ★ 合并成一行
     line_one = f"每年交{premium_str}，交{years_str}年不用再交"
 
-    # 找"說明摘要"或"基本計劃"作为锚点
     hits_title = fitz_page.search_for("說明摘要")
     if not hits_title:
         hits_title = fitz_page.search_for("基本計劃")
 
-    # 找表格表头作为下边界
     hits_header = fitz_page.search_for("保單年度")
     if not hits_header:
         hits_header = fitz_page.search_for("已繳保費")
@@ -368,7 +363,6 @@ def _annotate_summary(fitz_page, words, policy, font_path):
         title_y  = hits_title[0].y1
         header_y = hits_header[0].y0
         text_y   = title_y + (header_y - title_y) * 0.55
-        # ★ x 从标题右边一段距离开始，避免遮挡"基本計劃 說明摘要"
         text_x = hits_title[0].x1 + 30
         if text_x + len(line_one) * 10 > pw - 20:
             text_x = max(hits_title[0].x1 + 15, pw * 0.30)
@@ -378,7 +372,6 @@ def _annotate_summary(fitz_page, words, policy, font_path):
         if w_paid:
             _write(fitz_page, line_one, pw * 0.35, w_paid["top"] - 8, RED, font_path, fontsize=10)
 
-    # 列下方的标签
     if w_col12 and w_100:
         _write(fitz_page, "預計的退保價值",
                w_col12["x0"] - 10, w_100["bottom"] + 12, ORANGE, font_path, fontsize=9)
@@ -386,7 +379,6 @@ def _annotate_summary(fitz_page, words, policy, font_path):
         _write(fitz_page, "預計的理賠金額",
                w_col34["x0"] - 10, w_100["bottom"] + 12, GREEN, font_path, fontsize=9)
 
-    # 两个红框
     hits_12  = fitz_page.search_for("(1)+(2)")
     hits_34  = fitz_page.search_for("(3)+(4)")
     hits_100 = fitz_page.search_for("100歲")
@@ -403,9 +395,6 @@ def _annotate_summary(fitz_page, words, policy, font_path):
                     slogan_y, RED, font_path, fontsize=11)
 
 
-# ═══════════════════════════════════════════════════════════════
-# 重疾险 3. 多重赔付页 & 4. 持续癌症页
-# ═══════════════════════════════════════════════════════════════
 def _annotate_multi(fitz_page, words, font_path):
     content_words = [w for w in words if w["bottom"] < 760]
     last_y = (max(w["bottom"] for w in content_words) + 24) if content_words else 560

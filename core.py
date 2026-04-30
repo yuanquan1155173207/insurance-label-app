@@ -178,18 +178,14 @@ def _is_supplement_with_withdrawal(full_text):
 # ═══════════════════════════════════════════════════════════════
 def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.Document:
     """
-    简化策略：
-    ① 每一页都无条件遮盖右上角区域（顶部 10% × 右侧 45%）
-       —— 这块区域通常只有 logo/条形码/保单号，不会有正文
-    ② 每一页都无条件遮盖左下角区域（底部 8% × 左侧 55%）
-       —— 这块区域通常是"被保人姓名/申请人签署/页脚"
-    ③ 封面页额外处理（标题上方 logo 右侧区域）
-    ④ 保单号文字补充遮盖
-    ⑤ 左下角签名关键词扩大遮盖范围
+    统一遮盖策略：
+    - 右上角：固定坐标遮盖（logo 右侧条形码区域）
+    - 左下角：关键词 + 固定兜底
+    - 封面页：保单号文字补充遮盖
     """
     WHITE = (1, 1, 1)
 
-    # 提取保单号（用于辅助遮盖）
+    # 提取保单号
     policy_number = None
     for page in doc:
         text = page.get_text("text")
@@ -206,67 +202,47 @@ def redact_personal_info(doc: fitz.Document, is_savings: bool = False) -> fitz.D
         redact_rects = []
 
         # ═══════════════════════════════════════════
-        # 1️⃣ 右上角：无条件遮盖（顶部 10% × 右侧 45%）
+        # 1️⃣ 右上角：固定遮盖（logo 右侧 + 顶部区域）
+        #    关键：y 只遮到 ph*0.08（约 67pt），不会碰到居中的主标题
+        #    x 从 pw*0.50 开始（条形码一定在页面右半）
         # ═══════════════════════════════════════════
-        redact_rects.append(fitz.Rect(pw * 0.55, 0, pw, ph * 0.10))
+        redact_rects.append(fitz.Rect(pw * 0.50, 0, pw, ph * 0.08))
 
         # ═══════════════════════════════════════════
-        # 2️⃣ 封面页：扩大右上角遮盖范围（标题上方）
-        # ═══════════════════════════════════════════
-        if is_savings:
-            is_savings_cover = (
-                "保障摘要" in text and
-                "保障項目" in text
-            )
-            if is_savings_cover:
-                title_y = None
-                for tk in ["保障摘要", "儲蓄保險", "建議書摘要"]:
-                    hits = page.search_for(tk)
-                    if hits:
-                        title_y = hits[0].y0
-                        break
-                if title_y and title_y > ph * 0.10:
-                    redact_rects.append(fitz.Rect(pw * 0.40, 0, pw, title_y - 2))
-        else:
-            is_ci_cover = _is_cover_page(text)
-            if is_ci_cover:
-                hits_title = page.search_for("愛唯守危疾保障")
-                if hits_title and hits_title[0].y0 > ph * 0.10:
-                    redact_rects.append(fitz.Rect(pw * 0.35, 0, pw, hits_title[0].y0 - 2))
-
-        # ═══════════════════════════════════════════
-        # 3️⃣ 保单号文字（补充遮盖）
+        # 2️⃣ 保单号文字：独立搜索并遮盖（不依赖封面判断）
         # ═══════════════════════════════════════════
         if policy_number:
             for r in page.search_for(policy_number):
-                redact_rects.append(fitz.Rect(r.x0 - 5, r.y0 - 2, pw, r.y1 + 3))
+                # 只遮保单号所在行的右半部分，避免误伤左侧正文
+                x_start = max(r.x0 - 5, pw * 0.40)
+                redact_rects.append(fitz.Rect(x_start, r.y0 - 2, pw, r.y1 + 3))
 
         # ═══════════════════════════════════════════
-        # 4️⃣ 左下角签名关键词：扩大遮盖区域
+        # 3️⃣ 左下角签名关键词：精确遮盖
         # ═══════════════════════════════════════════
         sig_keywords = [
             "被保人姓名", "申請人姓名", "建議被保人", "建議社保局",
             "中華被保人", "投保人簽署", "申請人簽署",
-            "理財顧問", "保險顧問", "Source Code",
+            "理財顧問", "保險顧問",
         ]
         bottom_threshold = ph * 0.70
+        covered = False
         for kw in sig_keywords:
-            found = False
             for r in page.search_for(kw):
                 if r.y0 >= bottom_threshold:
                     redact_rects.append(fitz.Rect(0, r.y0 - 2, pw * 0.55, ph))
-                    found = True
+                    covered = True
                     break
-            if found:
+            if covered:
                 break
 
         # ═══════════════════════════════════════════
-        # 5️⃣ 左下角无条件兜底（底部 8% × 左侧 55%）
+        # 4️⃣ 左下角兜底（底部 4%，避免挡到正文最后一行）
         # ═══════════════════════════════════════════
-        redact_rects.append(fitz.Rect(0, ph * 0.92, pw * 0.55, ph))
+        redact_rects.append(fitz.Rect(0, ph * 0.96, pw * 0.55, ph))
 
         # ═══════════════════════════════════════════
-        # 6️⃣ 应用遮盖
+        # 5️⃣ 应用遮盖
         # ═══════════════════════════════════════════
         for rect in redact_rects:
             page.add_redact_annot(rect, fill=WHITE)

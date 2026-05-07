@@ -47,18 +47,28 @@ RED    = (0.85, 0.05, 0.05)
 ORANGE = (0.90, 0.45, 0.00)
 GREEN  = (0.05, 0.50, 0.05)
 
-def _write(page, text, x, y, color, font_path, fontsize=10):
+def _write(page, text, x, y, color, font_path, fontsize=10, bold=True):
+    """统一写字函数：默认红色加粗。bold=True 时通过双重描边模拟粗体。"""
     kw = dict(fontsize=fontsize, color=color)
     if font_path and os.path.exists(font_path):
         kw["fontfile"] = font_path
         kw["fontname"] = "cjk"
-    try:    return page.insert_text((x, y), text, **kw)
-    except: return -1
+    try:
+        if bold:
+            # 描边法加粗：在原位置 + 周围 4 个偏移位写
+            offsets = [(0, 0), (0.4, 0), (0, 0.4), (0.4, 0.4)]
+            for dx, dy in offsets:
+                page.insert_text((x + dx, y + dy), text, **kw)
+            return 0
+        else:
+            return page.insert_text((x, y), text, **kw)
+    except:
+        return -1
 
-def _write_centered(page, text, y, color, font_path, fontsize=10):
+def _write_centered(page, text, y, color, font_path, fontsize=10, bold=True):
     pw = page.rect.width
     x  = max(10, (pw - len(text) * fontsize * 0.82) / 2)
-    return _write(page, text, x, y, color, font_path, fontsize)
+    return _write(page, text, x, y, color, font_path, fontsize, bold=bold)
 
 def _format_wan(amount, currency=""):
     if not amount or amount <= 0: return "XXX"
@@ -323,12 +333,9 @@ def _annotate_cover(fitz_page, words, policy, font_path):
     years_str   = str(int(policy.payment_years)) if policy.payment_years else "XX"
     age_str     = str(int(policy.coverage_age))  if policy.coverage_age  else "100"
 
-    # ★ 合并成一行
     line_all = f"保額是{base_str}，首{ext_years}年額外贈送{ratio}%保額；年保費是{premium_str}，交{years_str}年，保到{age_str}歲"
-
     pw = fitz_page.rect.width
 
-    # ── 基本计划行数字定位 ──
     base_num_rect  = None
     extra_row_line = None
     base_row_line  = None
@@ -346,7 +353,6 @@ def _annotate_cover(fitz_page, words, policy, font_path):
         r = hits_extra_num[0]
         extra_row_line = fitz.Rect(36, r.y0 - 1, pw - 36, r.y1 + 1)
 
-    # ── 计算写字 y 坐标 ──
     hits_total = fitz_page.search_for("投保時每年總保費")
     total_y    = hits_total[0].y0 if hits_total else fitz_page.rect.height * 0.85
 
@@ -359,38 +365,32 @@ def _annotate_cover(fitz_page, words, policy, font_path):
     else:
         table_bottom = fitz_page.rect.height * 0.42
 
-    # ★ 在表格底部和总保费之间的空白中间写一行
     text_y = table_bottom + (total_y - table_bottom) * 0.45
-
     x_pos = 36
 
-    # ── 下划线 ──
     if base_row_line:
-        _draw_underline(fitz_page, base_row_line, line_width=1.2)
+        _draw_underline(fitz_page, base_row_line, line_width=1.5)
     if extra_row_line:
-        _draw_underline(fitz_page, extra_row_line, line_width=1.2)
+        _draw_underline(fitz_page, extra_row_line, line_width=1.5)
 
-    # ── 写一行红字 ──
-    _write(fitz_page, line_all, x_pos, text_y, RED, font_path, fontsize=12)
+    # ★ 字号从 12 → 14，加粗
+    _write(fitz_page, line_all, x_pos, text_y, RED, font_path, fontsize=14, bold=True)
 
-    # ── 箭头：从"保額是XXW美金"末尾指向保额数字 ──
     if base_num_rect:
         prefix = f"保額是{base_str}"
-        ax0 = x_pos + len(prefix) * 12 * 0.52
+        ax0 = x_pos + len(prefix) * 14 * 0.52
         ay0 = text_y - 6
-
         ax1 = base_num_rect.x0
         ay1 = (base_num_rect.y0 + base_num_rect.y1) / 2
-
         if ax0 >= ax1 - 10:
             ax0 = ax1 - 20
             ay0 = text_y - 4
-
         shape2 = fitz_page.new_shape()
         shape2.draw_line(fitz.Point(ax0, ay0), fitz.Point(ax1, ay1))
-        shape2.finish(color=RED, width=1.2, closePath=False)
+        shape2.finish(color=RED, width=1.5, closePath=False)
         shape2.commit()
-        _draw_arrowhead(fitz_page, ax0, ay0, ax1, ay1)
+        _draw_arrowhead(fitz_page, ax0, ay0, ax1, ay1, size=7)
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -406,16 +406,11 @@ def _annotate_summary(fitz_page, words, policy, font_path):
     years_str   = str(int(policy.payment_years))    if policy.payment_years  else "10"
 
     pw = fitz_page.rect.width
-
-    # ★ 合并成一行
     line_one = f"每年交{premium_str}，交{years_str}年不用再交"
 
-    # 找"說明摘要"或"基本計劃"作为锚点
     hits_title = fitz_page.search_for("說明摘要")
     if not hits_title:
         hits_title = fitz_page.search_for("基本計劃")
-
-    # 找表格表头作为下边界
     hits_header = fitz_page.search_for("保單年度")
     if not hits_header:
         hits_header = fitz_page.search_for("已繳保費")
@@ -424,25 +419,28 @@ def _annotate_summary(fitz_page, words, policy, font_path):
         title_y  = hits_title[0].y1
         header_y = hits_header[0].y0
         text_y   = title_y + (header_y - title_y) * 0.55
-        # ★ x 从标题右边一段距离开始，避免遮挡"基本計劃 說明摘要"
         text_x = hits_title[0].x1 + 30
-        if text_x + len(line_one) * 10 > pw - 20:
+        if text_x + len(line_one) * 12 > pw - 20:
             text_x = max(hits_title[0].x1 + 15, pw * 0.30)
-        _write(fitz_page, line_one, text_x, text_y, RED, font_path, fontsize=10)
+        # ★ 字号 10 → 12，加粗
+        _write(fitz_page, line_one, text_x, text_y, RED, font_path, fontsize=12, bold=True)
     else:
         w_paid = next((w for w in words if "已繳保費" in w["text"]), None)
         if w_paid:
-            _write(fitz_page, line_one, pw * 0.35, w_paid["top"] - 8, RED, font_path, fontsize=10)
+            _write(fitz_page, line_one, pw * 0.35, w_paid["top"] - 8,
+                   RED, font_path, fontsize=12, bold=True)
 
-    # 列下方的标签
+    # ★ 列下方标签：原来 ORANGE/GREEN → 全部 RED；字号 9 → 11，加粗
     if w_col12 and w_100:
         _write(fitz_page, "預計的退保價值",
-               w_col12["x0"] - 10, w_100["bottom"] + 12, ORANGE, font_path, fontsize=9)
+               w_col12["x0"] - 10, w_100["bottom"] + 14, RED, font_path,
+               fontsize=11, bold=True)
     if w_col34 and w_100:
         _write(fitz_page, "預計的理賠金額",
-               w_col34["x0"] - 10, w_100["bottom"] + 12, GREEN, font_path, fontsize=9)
+               w_col34["x0"] - 10, w_100["bottom"] + 14, RED, font_path,
+               fontsize=11, bold=True)
 
-    # 两个红框
+    # 红框加粗
     hits_12  = fitz_page.search_for("(1)+(2)")
     hits_34  = fitz_page.search_for("(3)+(4)")
     hits_100 = fitz_page.search_for("100歲")
@@ -451,12 +449,13 @@ def _annotate_summary(fitz_page, words, policy, font_path):
         hits_header2 = fitz_page.search_for("退保發還金額")
         table_top    = hits_header2[0].y0 - 2 if hits_header2 else r12.y0 - 18
         table_bottom = r100.y1 + 2
-        _draw_red_box(fitz_page, fitz.Rect(r12.x0 - 4, table_top, r12.x1 + 4, table_bottom), 1.5)
-        _draw_red_box(fitz_page, fitz.Rect(r34.x0 - 4, table_top, r34.x1 + 4, table_bottom), 1.5)
+        _draw_red_box(fitz_page, fitz.Rect(r12.x0 - 4, table_top, r12.x1 + 4, table_bottom), 2.0)
+        _draw_red_box(fitz_page, fitz.Rect(r34.x0 - 4, table_top, r34.x1 + 4, table_bottom), 2.0)
 
-    slogan_y = (w_note["bottom"] + 20) if w_note else 500
+    slogan_y = (w_note["bottom"] + 22) if w_note else 500
+    # ★ 字号 11 → 13
     _write_centered(fitz_page, "有事就賠錢，沒事就當存了筆錢",
-                    slogan_y, RED, font_path, fontsize=11)
+                    slogan_y, RED, font_path, fontsize=13, bold=True)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -464,17 +463,17 @@ def _annotate_summary(fitz_page, words, policy, font_path):
 # ═══════════════════════════════════════════════════════════════
 def _annotate_multi(fitz_page, words, font_path):
     content_words = [w for w in words if w["bottom"] < 760]
-    last_y = (max(w["bottom"] for w in content_words) + 24) if content_words else 560
-    _write_centered(fitz_page, "計劃本來自帶多次賠付，",                          last_y,    RED, font_path, fontsize=12)
-    _write_centered(fitz_page, "意思是萬一理賠過重疾了，不用再交費繼續有保障，",  last_y+18, RED, font_path, fontsize=12)
-    _write_centered(fitz_page, "最多能賠9次",                                      last_y+36, RED, font_path, fontsize=12)
+    last_y = (max(w["bottom"] for w in content_words) + 26) if content_words else 560
+    _write_centered(fitz_page, "計劃本來自帶多次賠付，",                          last_y,    RED, font_path, fontsize=14, bold=True)
+    _write_centered(fitz_page, "意思是萬一理賠過重疾了，不用再交費繼續有保障，",  last_y+22, RED, font_path, fontsize=14, bold=True)
+    _write_centered(fitz_page, "最多能賠9次",                                      last_y+44, RED, font_path, fontsize=14, bold=True)
 
 def _annotate_cancer(fitz_page, words, policy, font_path):
     content_words = [w for w in words if w["bottom"] < 760]
-    last_y = (max(w["bottom"] for w in content_words) + 24) if content_words else 620
-    _write_centered(fitz_page, "還有針對大家最擔心的癌症，",                              last_y,    RED, font_path, fontsize=12)
-    _write_centered(fitz_page, "如果患癌症了，理賠完重疾後",                              last_y+18, RED, font_path, fontsize=12)
-    _write_centered(fitz_page, "如果一年未愈，能每月賠5%的保額，直到康復或最長100個月",   last_y+46, RED, font_path, fontsize=12)
+    last_y = (max(w["bottom"] for w in content_words) + 26) if content_words else 620
+    _write_centered(fitz_page, "還有針對大家最擔心的癌症，",                              last_y,    RED, font_path, fontsize=14, bold=True)
+    _write_centered(fitz_page, "如果患癌症了，理賠完重疾後",                              last_y+22, RED, font_path, fontsize=14, bold=True)
+    _write_centered(fitz_page, "如果一年未愈，能每月賠5%的保額，直到康復或最長100個月",   last_y+52, RED, font_path, fontsize=14, bold=True)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -740,6 +739,7 @@ def _annotate_milestone_rows(fitz_page, milestones, font_path,
                 total_col_x1 = max(s["bbox"][2] for s in line["spans"]) + 4; break
         if total_col_x1: break
     if total_col_x1 is None: total_col_x1 = pw * fallback_col_ratio
+
     table_left = pw
     for block in text_dict["blocks"]:
         if block.get("type") != 0: continue
@@ -748,27 +748,36 @@ def _annotate_milestone_rows(fitz_page, milestones, font_path,
             if spans and re.match(r"^\d{1,2}$", spans[0]["text"].strip().replace(",","")):
                 table_left = min(table_left, spans[0]["bbox"][0] - 2)
     if table_left == pw: table_left = 10
+
     for ms in milestones:
-        target_year = str(ms["year"]); label = ms["label"]; r, g, b = ms["color"]
+        target_year = str(ms["year"]); label = ms["label"]
+        # ★ 不再使用每个 milestone 自带的颜色，统一红色
+        r, g, b = RED
         for block in text_dict["blocks"]:
             if block.get("type") != 0: continue
             for line in block["lines"]:
                 spans = line["spans"]
                 if not spans or spans[0]["text"].strip().replace(",","") != target_year: continue
                 y0, y1 = line["bbox"][1], line["bbox"][3]; row_h = max(y1-y0, 8)
+                # 红框加粗：1.2 → 1.8
                 shape = fitz_page.new_shape()
                 shape.draw_rect(fitz.Rect(table_left, y0-1.5, total_col_x1, y1+1.5))
-                shape.finish(color=(r,g,b), fill=None, width=1.2); shape.commit()
-                bubble_w = min(max(len(label)*7+10, 80), 120)
+                shape.finish(color=(r,g,b), fill=None, width=1.8); shape.commit()
+
+                # ★ 气泡更大：宽度+高度
+                bubble_w = min(max(len(label)*9+14, 100), 150)
+                bubble_h = max(row_h + 8, 18)
                 bx0 = total_col_x1+3; bx1 = bx0+bubble_w
                 if bx1 > pw-5: bx1 = pw-5; bx0 = bx1-bubble_w
-                bubble = fitz.Rect(bx0, y0-2, bx1, y0-2+row_h+4)
+                bubble = fitz.Rect(bx0, y0-3, bx1, y0-3+bubble_h)
                 shape2 = fitz_page.new_shape()
                 shape2.draw_rect(bubble)
-                shape2.finish(fill=(r,g,b), fill_opacity=0.88, color=(r,g,b), width=0.5); shape2.commit()
-                kw = dict(fontsize=6.5, color=(1,1,1), align=fitz.TEXT_ALIGN_CENTER)
-                if font_path: kw["fontfile"] = font_path; kw["fontname"] = "cjk"
-                fitz_page.insert_textbox(bubble, label, **kw)
+                shape2.finish(fill=(r,g,b), fill_opacity=0.95,
+                              color=(r,g,b), width=0.8); shape2.commit()
+                # ★ 字号 6.5 → 9，加粗
+                _write_textbox_bold(fitz_page, bubble, label,
+                                    fontsize=9, color=(1,1,1),
+                                    font_path=font_path, bold=True)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -816,23 +825,25 @@ def _annotate_withdrawal_page(fitz_page, withdrawal_info, font_path):
             spans = line["spans"]
             if spans and re.match(r"^\d{1,2}$", spans[0]["text"].strip()):
                 last_data_y1 = max(last_data_y1, line["bbox"][3])
+
+    # ★ 红框加粗：1.5 → 2.0
     shape = fitz_page.new_shape()
     shape.draw_rect(fitz.Rect(col1_x0, col_header_y-2, col12_x1, last_data_y1+2))
-    shape.finish(color=RED, fill=None, width=1.5); shape.commit()
+    shape.finish(color=RED, fill=None, width=2.0); shape.commit()
     shape = fitz_page.new_shape()
     shape.draw_rect(fitz.Rect(col345_x0, col_header_y-2, col345_x1, last_data_y1+2))
-    shape.finish(color=RED, fill=None, width=1.5); shape.commit()
+    shape.finish(color=RED, fill=None, width=2.0); shape.commit()
+
     start_year    = withdrawal_info.get("start_year", 0)
     annual_amount = withdrawal_info.get("annual_amount", 0)
     currency      = withdrawal_info.get("currency", "")
     cur_str = {"美金":"USD","港幣":"HKD","人民幣":"RMB"}.get(currency, currency)
     left_text  = f"第{start_year}年開始，每年提取{int(annual_amount):,}{cur_str}" if start_year > 0 and annual_amount > 0 else "開始提取後"
     right_text = "提取後保單預計繼續增值"
-    label_y    = last_data_y1 + 20
-    kw_red = dict(fontsize=11, color=RED)
-    if font_path: kw_red["fontfile"] = font_path; kw_red["fontname"] = "cjk"
-    fitz_page.insert_text((20, label_y), left_text, **kw_red)
-    fitz_page.insert_text((pw*0.55, label_y), right_text, **kw_red)
+    label_y    = last_data_y1 + 24
+    # ★ 字号 11 → 13，加粗
+    _write(fitz_page, left_text,  20,        label_y, RED, font_path, fontsize=13, bold=True)
+    _write(fitz_page, right_text, pw * 0.55, label_y, RED, font_path, fontsize=13, bold=True)
 
 
 # ═══════════════════════════════════════════════════════════════

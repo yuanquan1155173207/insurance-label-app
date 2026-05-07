@@ -55,7 +55,6 @@ def _write(page, text, x, y, color, font_path, fontsize=10, bold=True):
         kw["fontname"] = "cjk"
     try:
         if bold:
-            # 描边法加粗：在原位置 + 周围 4 个偏移位写
             offsets = [(0, 0), (0.4, 0), (0, 0.4), (0.4, 0.4)]
             for dx, dy in offsets:
                 page.insert_text((x + dx, y + dy), text, **kw)
@@ -69,6 +68,25 @@ def _write_centered(page, text, y, color, font_path, fontsize=10, bold=True):
     pw = page.rect.width
     x  = max(10, (pw - len(text) * fontsize * 0.82) / 2)
     return _write(page, text, x, y, color, font_path, fontsize, bold=bold)
+
+# ★★★ 把这个函数加上 ★★★
+def _write_textbox_bold(page, rect, text, fontsize, color, font_path,
+                        align=None, bold=True):
+    """加粗版 insert_textbox：用于气泡/盒子内的文字（描边法模拟粗体）。"""
+    if align is None:
+        align = fitz.TEXT_ALIGN_CENTER
+    kw = dict(fontsize=fontsize, color=color, align=align)
+    if font_path and os.path.exists(font_path):
+        kw["fontfile"] = font_path
+        kw["fontname"] = "cjk"
+    if bold:
+        offsets = [(0, 0), (0.4, 0), (0, 0.4), (0.4, 0.4)]
+        for dx, dy in offsets:
+            shifted = fitz.Rect(rect.x0 + dx, rect.y0 + dy,
+                                rect.x1 + dx, rect.y1 + dy)
+            page.insert_textbox(shifted, text, **kw)
+    else:
+        page.insert_textbox(rect, text, **kw)
 
 def _format_wan(amount, currency=""):
     if not amount or amount <= 0: return "XXX"

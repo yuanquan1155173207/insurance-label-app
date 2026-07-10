@@ -660,7 +660,7 @@ def annotate_critical_illness_pdf(input_pdf_path, policy, font_path=None):
     try:
         fitz_doc.subset_fonts()
     except Exception as e:
-        print(f"⚠️ 字体子集化失败（不影响输出，仅文件较大）: {e}")
+        print(f"⚠️ 字体子集化失败（仅影响文件大小）: {e}")
     fitz_doc.save(output, garbage=4, deflate=True, clean=True)
     fitz_doc.close()
     return output.getvalue()
@@ -831,5 +831,69 @@ def _annotate_withdrawal_page(fitz_page, withdrawal_info, font_path):
                         break
             if "(3)+(4)+(5)" in line_text and col345_x0 is None:
                 for span in line["spans"]:
-                    if "(3)+(4)+(5)
+                    if "(3)+(4)+(5)" in span["text"].replace(" ",""):
+                        col345_x0 = span["bbox"][0]-3
+                        col345_x1 = span["bbox"][2]+3
+                        if col_header_y is None: col_header_y = line["bbox"][1]
+                        break
+    if col1_x0      is None: col1_x0      = pw * 0.22
+    if col12_x1     is None: col12_x1     = pw * 0.42
+    if col345_x0    is None: col345_x0    = pw * 0.72
+    if col345_x1    is None: col345_x1    = pw * 0.92
+    if col_header_y is None: col_header_y = ph * 0.15
+    last_data_y1 = ph * 0.85
+    for block in text_dict["blocks"]:
+        if block.get("type") != 0: continue
+        for line in block["lines"]:
+            spans = line["spans"]
+            if spans and re.match(r"^\d{1,2}$", spans[0]["text"].strip()):
+                last_data_y1 = max(last_data_y1, line["bbox"][3])
 
+    # ★ 红框加粗：1.5 → 2.0
+    shape = fitz_page.new_shape()
+    shape.draw_rect(fitz.Rect(col1_x0, col_header_y-2, col12_x1, last_data_y1+2))
+    shape.finish(color=RED, fill=None, width=2.0); shape.commit()
+    shape = fitz_page.new_shape()
+    shape.draw_rect(fitz.Rect(col345_x0, col_header_y-2, col345_x1, last_data_y1+2))
+    shape.finish(color=RED, fill=None, width=2.0); shape.commit()
+
+    start_year    = withdrawal_info.get("start_year", 0)
+    annual_amount = withdrawal_info.get("annual_amount", 0)
+    currency      = withdrawal_info.get("currency", "")
+    cur_str = {"美金":"USD","港幣":"HKD","人民幣":"RMB"}.get(currency, currency)
+    left_text  = f"第{start_year}年開始，每年提取{int(annual_amount):,}{cur_str}" if start_year > 0 and annual_amount > 0 else "開始提取後"
+    right_text = "提取後保單預計繼續增值"
+    label_y    = last_data_y1 + 24
+    # ★ 字号 11 → 13，加粗
+    _write(fitz_page, left_text,  20,        label_y, RED, font_path, fontsize=13, bold=True)
+    _write(fitz_page, right_text, pw * 0.55, label_y, RED, font_path, fontsize=13, bold=True)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 储蓄险主入口
+# ═══════════════════════════════════════════════════════════════
+def annotate_savings_pdf(input_pdf_path, milestones, font_path=None, log=print):
+    if font_path is None: font_path = find_chinese_font()
+    withdrawal_info = _parse_withdrawal_info(input_pdf_path, log=log)
+    doc = fitz.open(input_pdf_path)
+    doc = redact_personal_info(doc, is_savings=True)
+    for page in doc:
+        full_text = page.get_text("text")
+        is_no_wd   = _is_supplement_no_withdrawal(full_text)
+        is_with_wd = _is_supplement_with_withdrawal(full_text)
+        if not (is_no_wd or is_with_wd): continue
+        log(f"  📄 处理页面：no_withdrawal={is_no_wd}  with_withdrawal={is_with_wd}")
+        if is_no_wd:
+            _annotate_milestone_rows(page, milestones, font_path,
+                                     col_header_text="(1)+(2)+(3)", fallback_col_ratio=0.52)
+        elif is_with_wd:
+            _annotate_withdrawal_page(page, withdrawal_info, font_path)
+    output = io.BytesIO()
+    # ★★★ 新增：字体子集化，只保留实际用到的字形，大幅缩小文件体积 ★★★
+    try:
+        doc.subset_fonts()
+    except Exception as e:
+        log(f"⚠️ 字体子集化失败（仅影响文件大小）: {e}")
+    doc.save(output, garbage=4, deflate=True, clean=True)
+    doc.close()
+    return output.getvalue()

@@ -93,7 +93,7 @@ def _format_wan(amount, currency=""):
     cur = currency or ""
     wan = amount / 10000
     if wan >= 1 and wan == int(wan):   return f"{int(wan)}W{cur}"
-    elif wan >= 1:                      return f"{wan:.0f}W{cur}"
+    elif wan >= 1:                      return f"{wan:.0f}W{cur}"   # ← 罪魁祸首
     else:                               return f"{int(amount):,}{cur}"
 
 def _draw_red_box(fitz_page, rect, line_width=1.5):

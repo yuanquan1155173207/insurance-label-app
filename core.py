@@ -92,9 +92,12 @@ def _format_wan(amount, currency=""):
     if not amount or amount <= 0: return "XXX"
     cur = currency or ""
     wan = amount / 10000
-    if wan >= 1 and wan == int(wan):   return f"{int(wan)}W{cur}"
-    elif wan >= 1:                      return f"{wan:.0f}W{cur}"   # ← 罪魁祸首
-    else:                               return f"{int(amount):,}{cur}"
+    if wan >= 1:
+        wan_str = f"{wan:.2f}".rstrip("0").rstrip(".")
+        return f"{wan_str}W{cur}"
+    else:
+        return f"{int(amount):,}{cur}"
+
 
 def _draw_red_box(fitz_page, rect, line_width=1.5):
     shape = fitz_page.new_shape()
